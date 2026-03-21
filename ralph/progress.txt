@@ -12,3 +12,5 @@ Branch: ralph/issue-4
 PR: #17
 Summary: Defined full in-memory data model (Song, Chain, Phrase, Step, FxSlot, Instrument, Sample, InterpMode) with serde derives. Added bincode/.trk and JSON persistence via tracker-core::storage. TUI gains colon command mode (:w, :e, :export-json) with error display in status bar. 11 tests pass including bincode and JSON round-trips.
 
+
+## Iteration 4 — Sat 21 Mar 2026 03:04:09 GMT
