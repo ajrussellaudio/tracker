@@ -45,6 +45,14 @@ pub enum Command {
         phrases: Vec<Phrase>,
         instruments: Vec<Instrument>,
     },
+    /// Set the output volume for track `track` (0.0–2.0).  Takes effect immediately.
+    SetTrackVolume { track: u8, volume: f32 },
+    /// Set the stereo pan for track `track` (-1.0 to 1.0).  Takes effect immediately.
+    SetTrackPan { track: u8, pan: f32 },
+    /// Mute or unmute track `track`.  A muted track fires no NoteOn events.
+    SetTrackMute { track: u8, mute: bool },
+    /// Toggle solo on track `track`.  When any track is soloed, non-soloed tracks are silent.
+    SetTrackSolo { track: u8, active: bool },
 }
 
 /// 4-point Hermite cubic interpolation for the "Sinc" quality mode.

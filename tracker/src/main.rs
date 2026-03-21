@@ -88,6 +88,7 @@ enum View {
     PhraseEditor,
     InstrumentEditor,
     SampleBrowser,
+    Mixer,
 }
 
 enum InputMode {
@@ -184,6 +185,10 @@ struct App {
     cursor_col: usize,
     /// Phrase editor: buffer for in-progress FX command or value entry.
     fx_edit_buf: String,
+    /// Mixer view: active track column (0–7).
+    mixer_cursor_track: usize,
+    /// Mixer view: active field row (0=VOL, 1=PAN, 2=MUTE, 3=SOLO, 4=SEND).
+    mixer_cursor_field: usize,
 }
 
 impl App {
@@ -224,6 +229,8 @@ impl App {
             chain_insert_mode: false,
             cursor_col: 0,
             fx_edit_buf: String::new(),
+            mixer_cursor_track: 0,
+            mixer_cursor_field: 0,
         }
     }
 
@@ -259,6 +266,20 @@ impl App {
         let instruments = self.song.instruments.clone();
         self.send_cmd(Command::UpdateSongData { arrangement, chains, phrases, instruments });
         self.send_cmd(Command::SetSampleRoot(self.sample_root));
+    }
+
+    /// Push all mixer state to the audio thread (called after load and incremental changes).
+    fn sync_mixer_to_audio(&mut self) {
+        for t in 0..TRACKS {
+            let (vol, pan, mute, solo) = {
+                let m = &self.song.mixer[t];
+                (m.volume, m.pan, m.mute, m.solo)
+            };
+            self.send_cmd(Command::SetTrackVolume { track: t as u8, volume: vol });
+            self.send_cmd(Command::SetTrackPan { track: t as u8, pan });
+            self.send_cmd(Command::SetTrackMute { track: t as u8, mute });
+            self.send_cmd(Command::SetTrackSolo { track: t as u8, active: solo });
+        }
     }
 
     /// Toggle play / stop.
@@ -454,6 +475,7 @@ impl App {
                     self.sync_phrase_to_sequencer();
                     self.reload_instruments();
                     self.sync_song_to_sequencer();
+                    self.sync_mixer_to_audio();
                     self.status = format!("Loaded: {path}");
                 }
                 Err(e) => self.status = format!("Error: {e}"),
@@ -549,6 +571,12 @@ fn start_audio_stream(
 
     let mut sequencer = Sequencer::new(48000.0, initial_bpm);
 
+    // Per-track mixer state: updated by SetTrackVolume/Pan/Mute/Solo commands.
+    let mut track_volumes = [1.0f32; TRACKS];
+    let mut track_pans = [0.0f32; TRACKS];
+    let mut track_mute = [false; TRACKS];
+    let mut track_solo = [false; TRACKS];
+
     /// Scheduled retrigger: fires `speed`/`volume`/`pan` on `track` after `samples_until` frames.
     struct Retrigger {
         track: usize,
@@ -617,17 +645,44 @@ fn start_audio_stream(
                     Command::UpdateSongData { arrangement, chains, phrases, instruments } => {
                         sequencer.update_song_data(arrangement, chains, phrases, instruments);
                     }
+                    Command::SetTrackVolume { track, volume } => {
+                        if (track as usize) < TRACKS {
+                            track_volumes[track as usize] = volume;
+                        }
+                    }
+                    Command::SetTrackPan { track, pan } => {
+                        if (track as usize) < TRACKS {
+                            track_pans[track as usize] = pan;
+                        }
+                    }
+                    Command::SetTrackMute { track, mute } => {
+                        if (track as usize) < TRACKS {
+                            track_mute[track as usize] = mute;
+                        }
+                    }
+                    Command::SetTrackSolo { track, active } => {
+                        if (track as usize) < TRACKS {
+                            track_solo[track as usize] = active;
+                        }
+                    }
                 }
             }
 
             // Advance the sequencer and trigger notes, applying any FX slots.
+            let any_solo = track_solo.iter().any(|&s| s);
             let events = sequencer.advance(frames);
             for event in &events {
                 current_step.store(event.step_index, Ordering::Relaxed);
                 for (track, speed, fx) in &event.notes {
+                    // Skip if muted or if another track is soloed and this one isn't.
+                    if track_mute[*track] || (any_solo && !track_solo[*track]) {
+                        continue;
+                    }
+
                     let mut final_speed = *speed;
-                    let mut vol = 1.0f32;
-                    let mut pan = 0.0f32;
+                    // FX slots override vol/pan; track-level values are the base.
+                    let mut vol = track_volumes[*track];
+                    let mut pan = track_pans[*track];
                     let mut ret_count: u8 = 0;
 
                     for slot in fx.iter() {
@@ -1095,6 +1150,78 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
     )
 }
 
+// ── Mixer field row indices ──────────────────────────────────────────────────
+const MIXER_FIELD_VOL: usize = 0;
+const MIXER_FIELD_PAN: usize = 1;
+const MIXER_FIELD_MUTE: usize = 2;
+const MIXER_FIELD_SOLO: usize = 3;
+const MIXER_FIELD_SEND: usize = 4;
+const MIXER_FIELD_COUNT: usize = 5;
+
+fn render_mixer_view(app: &App) -> Table<'static> {
+    let field_labels = ["VOL", "PAN", "MUT", "SOL", "SND"];
+
+    let header = Row::new(
+        std::iter::once(Cell::from("    ")).chain(
+            (0..TRACKS).map(|t| {
+                Cell::from(format!("TRK{t}")).style(Style::default().fg(Color::DarkGray))
+            }),
+        ),
+    );
+
+    let rows: Vec<Row> = field_labels
+        .iter()
+        .enumerate()
+        .map(|(field_idx, label)| {
+            let cells: Vec<Cell> = std::iter::once(
+                Cell::from(*label).style(Style::default().fg(Color::DarkGray)),
+            )
+            .chain((0..TRACKS).map(|t| {
+                let m = &app.song.mixer[t];
+                let is_cursor =
+                    t == app.mixer_cursor_track && field_idx == app.mixer_cursor_field;
+
+                let text = match field_idx {
+                    MIXER_FIELD_VOL => format!("{:.2}", m.volume),
+                    MIXER_FIELD_PAN => format!("{:+.2}", m.pan),
+                    MIXER_FIELD_MUTE => if m.mute { "■  " } else { "·  " }.to_string(),
+                    MIXER_FIELD_SOLO => if m.solo { "◆  " } else { "·  " }.to_string(),
+                    MIXER_FIELD_SEND => format!("{:.2}", m.fx_send),
+                    _ => "   ".to_string(),
+                };
+
+                let style = if is_cursor {
+                    Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                } else if field_idx == MIXER_FIELD_MUTE && m.mute {
+                    Style::default().fg(Color::Red)
+                } else if field_idx == MIXER_FIELD_SOLO && m.solo {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                Cell::from(text).style(style)
+            }))
+            .collect();
+            Row::new(cells)
+        })
+        .collect();
+
+    // 4 chars for label + 8 equal-width track columns
+    let constraints: Vec<Constraint> = std::iter::once(Constraint::Length(4))
+        .chain((0..TRACKS).map(|_| Constraint::Ratio(1, TRACKS as u32)))
+        .collect();
+
+    Table::new(rows, constraints)
+        .header(header)
+        .block(
+            Block::default()
+                .title("MIXER  [F2: close  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo]")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+}
+
 // ── Instrument editor field helper ───────────────────────────────────────────
 
 /// Increment or decrement the currently-selected numeric/mode instrument field.
@@ -1198,6 +1325,10 @@ fn run_tui(
                     let para = render_sample_browser(&app);
                     frame.render_widget(para, outer[0]);
                 }
+                View::Mixer => {
+                    let table = render_mixer_view(&app);
+                    frame.render_widget(table, outer[0]);
+                }
             }
 
             // Status bar
@@ -1258,6 +1389,11 @@ fn run_tui(
                     format!(
                         "BROWSER  |  j/k: nav  Enter: select  Esc: cancel  ({} files)",
                         app.browser_entries.len()
+                    )
+                }
+                View::Mixer => {
+                    format!(
+                        "{transport}  |  MIXER  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo  Esc: back"
                     )
                 }
             };
@@ -1351,7 +1487,10 @@ fn run_tui(
                             app.push_view(View::PhraseEditor);
                             app.mode = InputMode::Normal;
                         }
-                        // F3 → phrase editor; F4 → instrument editor
+                        // F3 → phrase editor; F4 → instrument editor; F2 → mixer
+                        KeyCode::F(2) => {
+                            app.push_view(View::Mixer);
+                        }
                         KeyCode::F(3) => {
                             app.push_view(View::PhraseEditor);
                         }
@@ -1894,6 +2033,148 @@ fn run_tui(
                         KeyCode::Enter => app.confirm_browser_selection(),
                         _ => {}
                     },
+
+                    // ──────────────────────────────────────────────────────────
+                    // Mixer view key handling
+                    // ──────────────────────────────────────────────────────────
+                    View::Mixer => match key.code {
+                        KeyCode::Esc | KeyCode::F(2) => app.pop_view(),
+
+                        // Track navigation (left/right)
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            if app.mixer_cursor_track > 0 {
+                                app.mixer_cursor_track -= 1;
+                            }
+                        }
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            if app.mixer_cursor_track < TRACKS - 1 {
+                                app.mixer_cursor_track += 1;
+                            }
+                        }
+
+                        // Field navigation (up/down)
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            app.mixer_cursor_field =
+                                (app.mixer_cursor_field + 1) % MIXER_FIELD_COUNT;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            app.mixer_cursor_field =
+                                (app.mixer_cursor_field + MIXER_FIELD_COUNT - 1)
+                                    % MIXER_FIELD_COUNT;
+                        }
+
+                        // Increment/decrement numeric fields (+/=  and  -)
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            let t = app.mixer_cursor_track;
+                            let m = &mut app.song.mixer[t];
+                            match app.mixer_cursor_field {
+                                MIXER_FIELD_VOL => {
+                                    m.volume = ((m.volume + 0.05) * 100.0).round() / 100.0;
+                                    m.volume = m.volume.clamp(0.0, 2.0);
+                                    let v = m.volume;
+                                    app.send_cmd(Command::SetTrackVolume {
+                                        track: t as u8,
+                                        volume: v,
+                                    });
+                                }
+                                MIXER_FIELD_PAN => {
+                                    m.pan = ((m.pan + 0.05) * 100.0).round() / 100.0;
+                                    m.pan = m.pan.clamp(-1.0, 1.0);
+                                    let p = m.pan;
+                                    app.send_cmd(Command::SetTrackPan {
+                                        track: t as u8,
+                                        pan: p,
+                                    });
+                                }
+                                MIXER_FIELD_SEND => {
+                                    m.fx_send = ((m.fx_send + 0.05) * 100.0).round() / 100.0;
+                                    m.fx_send = m.fx_send.clamp(0.0, 1.0);
+                                }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char('-') => {
+                            let t = app.mixer_cursor_track;
+                            let m = &mut app.song.mixer[t];
+                            match app.mixer_cursor_field {
+                                MIXER_FIELD_VOL => {
+                                    m.volume = ((m.volume - 0.05) * 100.0).round() / 100.0;
+                                    m.volume = m.volume.clamp(0.0, 2.0);
+                                    let v = m.volume;
+                                    app.send_cmd(Command::SetTrackVolume {
+                                        track: t as u8,
+                                        volume: v,
+                                    });
+                                }
+                                MIXER_FIELD_PAN => {
+                                    m.pan = ((m.pan - 0.05) * 100.0).round() / 100.0;
+                                    m.pan = m.pan.clamp(-1.0, 1.0);
+                                    let p = m.pan;
+                                    app.send_cmd(Command::SetTrackPan {
+                                        track: t as u8,
+                                        pan: p,
+                                    });
+                                }
+                                MIXER_FIELD_SEND => {
+                                    m.fx_send = ((m.fx_send - 0.05) * 100.0).round() / 100.0;
+                                    m.fx_send = m.fx_send.clamp(0.0, 1.0);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Toggle mute (m key or Enter on MUTE row)
+                        KeyCode::Char('m') => {
+                            let t = app.mixer_cursor_track;
+                            let new_mute = !app.song.mixer[t].mute;
+                            app.song.mixer[t].mute = new_mute;
+                            app.send_cmd(Command::SetTrackMute {
+                                track: t as u8,
+                                mute: new_mute,
+                            });
+                        }
+
+                        // Toggle solo (s key or Enter on SOLO row)
+                        KeyCode::Char('s') => {
+                            let t = app.mixer_cursor_track;
+                            let new_solo = !app.song.mixer[t].solo;
+                            app.song.mixer[t].solo = new_solo;
+                            app.send_cmd(Command::SetTrackSolo {
+                                track: t as u8,
+                                active: new_solo,
+                            });
+                        }
+
+                        // Enter toggles the current field (mute/solo rows) or steps on others
+                        KeyCode::Enter => {
+                            let t = app.mixer_cursor_track;
+                            match app.mixer_cursor_field {
+                                MIXER_FIELD_MUTE => {
+                                    let new_mute = !app.song.mixer[t].mute;
+                                    app.song.mixer[t].mute = new_mute;
+                                    app.send_cmd(Command::SetTrackMute {
+                                        track: t as u8,
+                                        mute: new_mute,
+                                    });
+                                }
+                                MIXER_FIELD_SOLO => {
+                                    let new_solo = !app.song.mixer[t].solo;
+                                    app.song.mixer[t].solo = new_solo;
+                                    app.send_cmd(Command::SetTrackSolo {
+                                        track: t as u8,
+                                        active: new_solo,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Transport controls pass through even from Mixer
+                        KeyCode::Char(' ') => app.toggle_play(),
+                        KeyCode::F(5) => app.restart_play(),
+
+                        _ => {}
+                    },
                 }
             }
         }
@@ -2341,6 +2622,93 @@ mod tests {
 
         assert_eq!(app.song.arrangement, saved_arr, "arrangement should survive round-trip");
         std::fs::remove_file(&path).ok();
+    }
+
+    // ── Mixer tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn mixer_defaults_to_unity_gain_center_pan_no_mute_solo() {
+        let app = make_app();
+        for t in 0..TRACKS {
+            let m = &app.song.mixer[t];
+            assert!((m.volume - 1.0).abs() < 1e-4, "track {t} volume should default to 1.0");
+            assert!(m.pan.abs() < 1e-4, "track {t} pan should default to 0.0");
+            assert!(!m.mute, "track {t} should not be muted by default");
+            assert!(!m.solo, "track {t} should not be soloed by default");
+            assert!(m.fx_send.abs() < 1e-4, "track {t} fx_send should default to 0.0");
+        }
+    }
+
+    #[test]
+    fn mixer_mute_toggle_updates_model() {
+        let mut app = make_app();
+        assert!(!app.song.mixer[0].mute);
+        app.song.mixer[0].mute = true;
+        assert!(app.song.mixer[0].mute);
+        app.song.mixer[0].mute = false;
+        assert!(!app.song.mixer[0].mute);
+    }
+
+    #[test]
+    fn mixer_solo_toggle_updates_model() {
+        let mut app = make_app();
+        assert!(!app.song.mixer[2].solo);
+        app.song.mixer[2].solo = true;
+        assert!(app.song.mixer[2].solo);
+    }
+
+    #[test]
+    fn mixer_volume_clamped_to_range() {
+        let mut app = make_app();
+        app.song.mixer[0].volume = 3.0;
+        app.song.mixer[0].volume = app.song.mixer[0].volume.clamp(0.0, 2.0);
+        assert!((app.song.mixer[0].volume - 2.0).abs() < 1e-4);
+
+        app.song.mixer[0].volume = -0.5;
+        app.song.mixer[0].volume = app.song.mixer[0].volume.clamp(0.0, 2.0);
+        assert!(app.song.mixer[0].volume.abs() < 1e-4);
+    }
+
+    #[test]
+    fn mixer_state_persists_through_save_load() {
+        let mut app = make_app();
+        app.song.mixer[0].volume = 0.75;
+        app.song.mixer[1].pan = -0.5;
+        app.song.mixer[2].mute = true;
+        app.song.mixer[3].solo = true;
+        app.song.mixer[4].fx_send = 0.3;
+
+        let path = std::env::temp_dir().join("tracker_mixer_roundtrip.trk");
+        let path_str = path.to_str().unwrap().to_string();
+
+        app.mode = InputMode::Command;
+        app.cmd_buf = format!("w {path_str}");
+        app.execute_command();
+        assert!(app.status.starts_with("Saved:"), "save failed: {}", app.status);
+
+        app.song = Song::default();
+        app.mode = InputMode::Command;
+        app.cmd_buf = format!("e {path_str}");
+        app.execute_command();
+        assert!(app.status.starts_with("Loaded:"), "load failed: {}", app.status);
+
+        assert!((app.song.mixer[0].volume - 0.75).abs() < 1e-3, "volume should persist");
+        assert!((app.song.mixer[1].pan - (-0.5)).abs() < 1e-3, "pan should persist");
+        assert!(app.song.mixer[2].mute, "mute should persist");
+        assert!(app.song.mixer[3].solo, "solo should persist");
+        assert!((app.song.mixer[4].fx_send - 0.3).abs() < 1e-3, "fx_send should persist");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mixer_multiple_solos_allowed() {
+        let mut app = make_app();
+        app.song.mixer[0].solo = true;
+        app.song.mixer[3].solo = true;
+        assert!(app.song.mixer[0].solo);
+        assert!(app.song.mixer[3].solo);
+        assert!(!app.song.mixer[1].solo);
     }
 }
 
