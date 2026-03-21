@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::model::{InterpMode, Phrase, STEPS_PER_PHRASE};
+use crate::model::{Chain, Instrument, InterpMode, Phrase, STEPS_PER_PHRASE, TRACKS};
 
 /// Commands sent from the UI thread to the audio thread via a ring buffer.
 #[derive(Clone, Debug)]
@@ -37,6 +37,14 @@ pub enum Command {
     SetLoopPoints { slot: u8, loop_start: u32, loop_end: u32 },
     /// Update interpolation mode for the voice in `slot` (takes effect on next render frame).
     SetInterpMode { slot: u8, interp_mode: InterpMode },
+    /// Snapshot the full song hierarchy so the sequencer can traverse
+    /// arrangement → chain → phrase during multi-track playback.
+    UpdateSongData {
+        arrangement: Vec<[Option<u8>; TRACKS]>,
+        chains: Vec<Chain>,
+        phrases: Vec<Phrase>,
+        instruments: Vec<Instrument>,
+    },
 }
 
 /// 4-point Hermite cubic interpolation for the "Sinc" quality mode.
@@ -271,6 +279,29 @@ impl Default for Mixer {
     }
 }
 
+// ── StepEvent ─────────────────────────────────────────────────────────────────
+
+/// One step boundary event returned by `Sequencer::advance`.
+///
+/// `notes` contains `(track_index, playback_speed)` pairs for every track
+/// that has a non-empty step at this boundary.  Empty if all tracks are silent.
+#[derive(Debug, Clone)]
+pub struct StepEvent {
+    pub step_index: u8,
+    pub notes: Vec<(usize, f32)>,
+}
+
+// ── TrackState ────────────────────────────────────────────────────────────────
+
+/// Per-track position within the arrangement hierarchy.
+#[derive(Debug, Clone, Default)]
+struct TrackState {
+    /// Current row in `Song::arrangement`.
+    song_row: usize,
+    /// Current slot index within the track's chain at `song_row`.
+    chain_slot: usize,
+}
+
 // ── Sequencer ─────────────────────────────────────────────────────────────────
 
 /// Sample-accurate step sequencer.
@@ -287,7 +318,7 @@ impl Default for Mixer {
 pub struct Sequencer {
     /// Sub-sample accumulator driven by the audio callback.
     pub tick_counter: f64,
-    /// Current step index (0–15).
+    /// Current step index (0–15), shared across all 8 tracks.
     pub step_index: u8,
     /// Beats per minute.
     pub bpm: f32,
@@ -299,9 +330,20 @@ pub struct Sequencer {
     pub steps_per_beat: f32,
     /// Whether the sequencer is currently running.
     pub playing: bool,
+    /// Legacy single-track phrase (used when arrangement is empty).
     phrase: Option<Box<Phrase>>,
-    /// Root note of the loaded sample for pitch-speed calculation.
+    /// Root note fallback for legacy single-track mode.
     pub sample_root: u8,
+    /// Per-track position state (8 tracks, all advance in step-lock).
+    track_states: Vec<TrackState>,
+    /// Snapshot of the song arrangement (from `UpdateSongData`).
+    arrangement: Vec<[Option<u8>; TRACKS]>,
+    /// Snapshot of all chains.
+    chains: Vec<Chain>,
+    /// Snapshot of all phrases (indexed by ChainSlot::phrase).
+    phrases_data: Vec<Phrase>,
+    /// Snapshot of all instruments (for root-note lookup).
+    instruments: Vec<Instrument>,
 }
 
 impl Sequencer {
@@ -316,6 +358,11 @@ impl Sequencer {
             playing: false,
             phrase: None,
             sample_root: 60,
+            track_states: vec![TrackState::default(); TRACKS],
+            arrangement: Vec::new(),
+            chains: Vec::new(),
+            phrases_data: Vec::new(),
+            instruments: Vec::new(),
         }
     }
 
@@ -342,32 +389,107 @@ impl Sequencer {
         self.phrase = Some(phrase);
     }
 
-    /// Speed ratio for the given step, or None if the step is empty.
-    fn speed_for_step(&self, step_idx: u8) -> Option<f32> {
-        self.phrase.as_ref().and_then(|p| {
-            let step = &p.steps[step_idx as usize];
-            step.note.map(|note| {
-                let delta = note as i32 - self.sample_root as i32;
-                2.0_f64.powf(delta as f64 / 12.0) as f32
-            })
+    /// Receive a song-data snapshot from the UI thread for arrangement playback.
+    pub fn update_song_data(
+        &mut self,
+        arrangement: Vec<[Option<u8>; TRACKS]>,
+        chains: Vec<Chain>,
+        phrases: Vec<Phrase>,
+        instruments: Vec<Instrument>,
+    ) {
+        self.arrangement = arrangement;
+        self.chains = chains;
+        self.phrases_data = phrases;
+        self.instruments = instruments;
+    }
+
+    /// Resolve the playback speed for `track` at `step_idx`, using the arrangement
+    /// if available, otherwise falling back to the legacy single-phrase mode.
+    fn resolve_track_speed(&self, track: usize, step_idx: u8) -> Option<f32> {
+        if self.arrangement.is_empty() {
+            // Legacy mode: only track 0 uses the single phrase.
+            if track != 0 {
+                return None;
+            }
+            return self.phrase.as_ref().and_then(|p| {
+                let step = &p.steps[step_idx as usize];
+                step.note.map(|note| {
+                    let delta = note as i32 - self.sample_root as i32;
+                    2.0_f64.powf(delta as f64 / 12.0) as f32
+                })
+            });
+        }
+
+        let ts = &self.track_states[track];
+        let chain_idx = self.arrangement.get(ts.song_row)?.get(track)?.as_ref()?;
+        let chain = self.chains.get(*chain_idx as usize)?;
+        let slot = chain.slots.get(ts.chain_slot)?;
+        let phrase = self.phrases_data.get(slot.phrase as usize)?;
+        let step = &phrase.steps[step_idx as usize];
+        step.note.map(|note| {
+            let root = step
+                .instrument
+                .and_then(|i| self.instruments.get(i as usize))
+                .map(|instr| instr.root_note)
+                .unwrap_or(self.sample_root);
+            let delta = note as i32 + slot.transpose as i32 - root as i32;
+            2.0_f64.powf(delta as f64 / 12.0) as f32
         })
     }
 
-    /// Start playing from the current step.
-    /// Returns the playback speed if step 0 is non-empty, so the caller can
-    /// immediately trigger the mixer.
-    pub fn play(&mut self) -> Option<f32> {
-        self.playing = true;
-        self.tick_counter = 0.0;
-        self.speed_for_step(self.step_index)
+    /// Advance all track states when a phrase boundary is crossed (step 15 → 0).
+    fn advance_track_states(&mut self) {
+        if self.arrangement.is_empty() {
+            return;
+        }
+        for track in 0..TRACKS {
+            let ts = &mut self.track_states[track];
+            ts.chain_slot += 1;
+
+            // Check if the chain's slots are exhausted for this track.
+            let chain_exhausted = self
+                .arrangement
+                .get(ts.song_row)
+                .and_then(|row| row[track])
+                .and_then(|ci| self.chains.get(ci as usize))
+                .map(|c| ts.chain_slot >= c.slots.len())
+                .unwrap_or(true);
+
+            if chain_exhausted {
+                ts.chain_slot = 0;
+                // Advance (and wrap) the song row.
+                if !self.arrangement.is_empty() {
+                    ts.song_row = (ts.song_row + 1) % self.arrangement.len();
+                }
+            }
+        }
     }
 
-    /// Restart from step 0.
-    pub fn restart(&mut self) -> Option<f32> {
+    /// Reset all track positions to the beginning of the arrangement.
+    fn reset_track_states(&mut self) {
+        for ts in &mut self.track_states {
+            ts.song_row = 0;
+            ts.chain_slot = 0;
+        }
+    }
+
+    /// Start playing from the current step.
+    /// Returns `(track, speed)` pairs for every non-empty track at the current step.
+    pub fn play(&mut self) -> Vec<(usize, f32)> {
+        self.playing = true;
+        self.tick_counter = 0.0;
+        let si = self.step_index;
+        (0..TRACKS).filter_map(|t| self.resolve_track_speed(t, si).map(|s| (t, s))).collect()
+    }
+
+    /// Restart from step 0, resetting all track positions.
+    /// Returns `(track, speed)` pairs for every non-empty track at step 0.
+    pub fn restart(&mut self) -> Vec<(usize, f32)> {
         self.playing = true;
         self.step_index = 0;
         self.tick_counter = 0.0;
-        self.speed_for_step(0)
+        self.reset_track_states();
+        (0..TRACKS).filter_map(|t| self.resolve_track_speed(t, 0).map(|s| (t, s))).collect()
     }
 
     pub fn stop(&mut self) {
@@ -376,10 +498,9 @@ impl Sequencer {
 
     /// Advance the sequencer by `frames` audio samples.
     ///
-    /// Returns a list of `(step_index, Option<speed>)` events that fired.
-    /// `speed = Some(s)` means a non-empty step fired with playback speed `s`.
-    /// `speed = None`  means the step was empty (silence).
-    pub fn advance(&mut self, frames: usize) -> Vec<(u8, Option<f32>)> {
+    /// Returns one `StepEvent` for each step boundary crossed.  Each event
+    /// contains the step index and the `(track, speed)` pairs for non-empty tracks.
+    pub fn advance(&mut self, frames: usize) -> Vec<StepEvent> {
         if !self.playing {
             return vec![];
         }
@@ -391,9 +512,20 @@ impl Sequencer {
             let threshold = self.current_step_duration();
             if self.tick_counter >= threshold {
                 self.tick_counter -= threshold;
+                let prev_step = self.step_index;
                 self.step_index = (self.step_index + 1) % STEPS_PER_PHRASE as u8;
-                let speed = self.speed_for_step(self.step_index);
-                events.push((self.step_index, speed));
+
+                // When we wrap back to step 0 we've completed a phrase cycle —
+                // advance all track states to the next chain slot / song row.
+                if self.step_index == 0 && prev_step == STEPS_PER_PHRASE as u8 - 1 {
+                    self.advance_track_states();
+                }
+
+                let si = self.step_index;
+                let notes: Vec<(usize, f32)> = (0..TRACKS)
+                    .filter_map(|t| self.resolve_track_speed(t, si).map(|s| (t, s)))
+                    .collect();
+                events.push(StepEvent { step_index: si, notes });
             } else {
                 break;
             }
@@ -507,7 +639,7 @@ mod tests {
     #[test]
     fn sequencer_16_steps_complete_in_2_seconds_at_120_bpm() {
         let mut seq = make_seq_with_all_notes(120.0, 48000.0);
-        seq.restart(); // fires step 0
+        seq.restart();
         let events = seq.advance(96000);
         assert_eq!(events.len(), 16, "expected 16 step advances in 96000 samples");
         assert_eq!(seq.step_index, 0, "should have wrapped back to step 0");
@@ -523,9 +655,9 @@ mod tests {
     #[test]
     fn sequencer_no_drift_over_100_bars() {
         let mut seq = make_seq_with_all_notes(120.0, 48000.0);
-        let sps = seq.samples_per_step(); // 6000.0 exactly
-        let total_steps: usize = 100 * STEPS_PER_PHRASE; // 1600
-        let total_samples = (sps * total_steps as f64).round() as usize; // 9,600,000
+        let sps = seq.samples_per_step();
+        let total_steps: usize = 100 * STEPS_PER_PHRASE;
+        let total_samples = (sps * total_steps as f64).round() as usize;
 
         seq.restart();
         let events = seq.advance(total_samples);
@@ -550,42 +682,34 @@ mod tests {
         let mut seq = make_seq_with_all_notes(120.0, 48000.0);
         seq.swing = 0.5;
 
-        let sps = seq.samples_per_step() as usize; // 6000
-        let swing_offset = (seq.samples_per_step() * 0.5) as usize; // 3000
+        let sps = seq.samples_per_step() as usize;
+        let swing_offset = (seq.samples_per_step() * 0.5) as usize;
 
-        seq.restart(); // fires step 0; step_index = 0, tick_counter = 0
+        seq.restart();
 
-        // Step 0 is even → its duration is `sps`.  Step 1 fires after exactly sps frames.
         let e1 = seq.advance(sps);
         assert_eq!(e1.len(), 1, "step 1 should fire after sps frames");
-        assert_eq!(e1[0].0, 1, "first fired step should be 1");
+        assert_eq!(e1[0].step_index, 1, "first fired step should be 1");
 
-        // Step 1 is odd → its duration is sps + swing_offset = 9000.
-        // One frame before the threshold: nothing fires.
         let e_not_yet = seq.advance(sps + swing_offset - 1);
-        assert_eq!(
-            e_not_yet.len(),
-            0,
-            "step 2 should not fire before the odd-step threshold"
-        );
-        // The final frame crosses the threshold.
+        assert_eq!(e_not_yet.len(), 0, "step 2 should not fire before the odd-step threshold");
+
         let e2 = seq.advance(1);
         assert_eq!(e2.len(), 1, "step 2 should fire on the threshold frame");
-        assert_eq!(e2[0].0, 2, "fired step should be 2");
+        assert_eq!(e2[0].step_index, 2, "fired step should be 2");
     }
 
     #[test]
     fn sequencer_empty_steps_produce_no_note_events() {
         let mut seq = Sequencer::new(48000.0, 120.0);
-        // phrase with all empty steps
         let phrase = crate::model::Phrase::default();
         seq.set_phrase(Box::new(phrase));
         seq.restart();
 
         let events = seq.advance(96000);
         assert_eq!(events.len(), 16, "step-advance count should still be 16");
-        for (_, speed) in &events {
-            assert!(speed.is_none(), "empty steps must not produce NoteOn events");
+        for event in &events {
+            assert!(event.notes.is_empty(), "empty steps must not produce NoteOn events");
         }
     }
 
@@ -594,10 +718,8 @@ mod tests {
         let mut seq = make_seq_with_all_notes(120.0, 48000.0);
         seq.restart();
 
-        // Advance one step at 120 BPM (sps = 6000).
         let _ = seq.advance(6000);
 
-        // Change to 240 BPM mid-playback (sps becomes 3000).
         seq.bpm = 240.0;
         let events = seq.advance(3000);
         assert_eq!(events.len(), 1, "at 240 BPM one step should fire in 3000 frames");
@@ -611,6 +733,70 @@ mod tests {
 
         let events = seq.advance(96000);
         assert!(events.is_empty(), "stopped sequencer should not fire events");
+    }
+
+    #[test]
+    fn sequencer_multi_track_arrangement_fires_on_correct_tracks() {
+        use crate::model::{Chain, ChainSlot, Phrase, TRACKS};
+
+        let mut seq = Sequencer::new(48000.0, 120.0);
+
+        // Two phrases: phrase 0 has note 60 on step 0; phrase 1 has note 72 on step 0.
+        let mut p0 = Phrase::default();
+        p0.steps[0].note = Some(60);
+        let mut p1 = Phrase::default();
+        p1.steps[0].note = Some(72);
+        let phrases = vec![p0, p1];
+
+        // Chain 0 → phrase 0; Chain 1 → phrase 1.
+        let chains = vec![
+            Chain { slots: vec![ChainSlot { phrase: 0, transpose: 0 }] },
+            Chain { slots: vec![ChainSlot { phrase: 1, transpose: 0 }] },
+        ];
+
+        // Arrangement: track 0 → chain 0, track 1 → chain 1, others silent.
+        let mut row = [None; TRACKS];
+        row[0] = Some(0);
+        row[1] = Some(1);
+        let arrangement = vec![row];
+
+        seq.update_song_data(arrangement, chains, phrases, vec![]);
+        seq.sample_root = 60;
+        let initial = seq.restart();
+
+        // Step 0: track 0 fires at speed 1.0, track 1 fires at speed 2.0.
+        let t0_speed = initial.iter().find(|&&(t, _)| t == 0).map(|&(_, s)| s);
+        let t1_speed = initial.iter().find(|&&(t, _)| t == 1).map(|&(_, s)| s);
+        assert!(t0_speed.is_some(), "track 0 should fire on step 0");
+        assert!((t0_speed.unwrap() - 1.0).abs() < 1e-4, "track 0 speed should be 1.0");
+        assert!(t1_speed.is_some(), "track 1 should fire on step 0");
+        assert!((t1_speed.unwrap() - 2.0).abs() < 1e-4, "track 1 speed should be 2.0 (note 72, root 60)");
+    }
+
+    #[test]
+    fn sequencer_transpose_shifts_pitch() {
+        use crate::model::{Chain, ChainSlot, Phrase, TRACKS};
+
+        let mut seq = Sequencer::new(48000.0, 120.0);
+
+        let mut p = Phrase::default();
+        p.steps[0].note = Some(60); // C4, speed 1.0 at root 60
+
+        let chains = vec![Chain {
+            slots: vec![ChainSlot { phrase: 0, transpose: 12 }], // +1 octave
+        }];
+        let mut row = [None; TRACKS];
+        row[0] = Some(0);
+        let arrangement = vec![row];
+
+        seq.update_song_data(arrangement, chains, vec![p], vec![]);
+        seq.sample_root = 60;
+        let initial = seq.restart();
+
+        let t0_speed = initial.iter().find(|&&(t, _)| t == 0).map(|&(_, s)| s);
+        assert!(t0_speed.is_some());
+        // note=60, transpose=12, root=60 → delta=12 → speed=2.0
+        assert!((t0_speed.unwrap() - 2.0).abs() < 1e-4, "transpose +12 should double speed");
     }
 
     // ── Loop point tests ──────────────────────────────────────────────────────

@@ -36,3 +36,14 @@ Status: done
 Branch: ralph/issue-7
 PR: #20
 Summary: Added instrument editor view (Tab to open, hjkl navigate 8 fields, h/l adjust values, i edits text). Sample browser lists .wav files from cwd with hjkl+Enter selection. Voice gains loop_start/loop_end (infinite sustain when loop_end > loop_start, one-shot otherwise) and interp_mode (None=nearest, Linear=lerp, Sinc=Hermite cubic). New Commands: LoadVoice, SetLoopPoints, SetInterpMode handled by audio thread. All instrument fields persist via :w/:e. 17 new tests; 51 total.
+
+## COMPLETE — Sat 21 Mar 2026 03:40:39 GMT
+All tasks finished at iteration 6.
+
+## Iteration 1 — Sat 21 Mar 2026 08:12:19 GMT
+
+## Issue #8 — Song/Chain arrangement: full 8-track sequencer
+Status: done
+Branch: ralph/issue-8
+PR: #21
+Summary: Added SongView (8-col × N-row arrangement grid) and ChainView (phrase slots with semitone transpose). Sequencer extended to 8 independent tracks each tracking song_row/chain_slot; playback wraps to row 0 (loops). ChainSlot replaces Chain.phrases; Song gains arrangement field; CURRENT_VERSION bumped to 2. Screen navigation stack (push_view/pop_view) with Esc/Backspace pop-back and F1/F3/F4 hotkeys. 57 tests pass (6 new).
