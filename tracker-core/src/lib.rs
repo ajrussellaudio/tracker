@@ -3,11 +3,11 @@ pub mod model;
 pub mod storage;
 
 pub use model::{
-    Chain, FxSlot, Instrument, InterpMode, Phrase, Sample, Song, Step, CURRENT_VERSION,
-    FX_SLOTS_PER_STEP, STEPS_PER_PHRASE,
+    Chain, ChainSlot, FxSlot, Instrument, InterpMode, Phrase, Sample, Song, Step,
+    CURRENT_VERSION, FX_SLOTS_PER_STEP, STEPS_PER_PHRASE, TRACKS,
 };
 
-pub use audio::Sequencer;
+pub use audio::{Sequencer, StepEvent};
 
 #[cfg(test)]
 mod tests {
@@ -37,7 +37,7 @@ mod tests {
         };
         song.phrases.push(phrase);
         let mut chain = model::Chain::default();
-        chain.phrases.push(0);
+        chain.slots.push(model::ChainSlot { phrase: 0, transpose: 0 });
         song.chains.push(chain);
         song
     }

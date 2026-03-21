@@ -23,7 +23,7 @@ use std::{
 };
 use tracker_core::{
     audio::{Command, Mixer, Sequencer, Voice},
-    model::{InterpMode, Song, Step, STEPS_PER_PHRASE},
+    model::{Chain, ChainSlot, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
     storage,
 };
 
@@ -83,6 +83,8 @@ fn pitch_speed(note: u8, root_note: u8) -> f32 {
 
 /// Top-level view the TUI is showing.
 enum View {
+    SongView,
+    ChainView,
     PhraseEditor,
     InstrumentEditor,
     SampleBrowser,
@@ -145,6 +147,22 @@ struct App {
     browser_entries: Vec<String>,
     /// Sample browser: cursor row.
     browser_cursor: usize,
+    /// Index of the phrase currently being edited.
+    active_phrase_idx: usize,
+    /// Navigation stack for Esc/Backspace pop-back.
+    view_stack: Vec<View>,
+    /// Song view cursor: current row.
+    song_cursor_row: usize,
+    /// Song view cursor: current track column (0–7).
+    song_cursor_track: usize,
+    /// Chain view: which track's chain we are editing.
+    chain_view_track: usize,
+    /// Chain view: which arrangement row we drilled in from.
+    chain_view_row: usize,
+    /// Chain view cursor: slot index within the chain.
+    chain_cursor: usize,
+    /// Chain view insert mode: editing phrase/transpose values.
+    chain_insert_mode: bool,
 }
 
 impl App {
@@ -154,14 +172,10 @@ impl App {
         seq_playing: Arc<AtomicBool>,
         current_seq_step: Arc<AtomicU8>,
     ) -> Self {
-        // Ensure the song has at least one phrase to edit.
-        let mut song = Song::default();
-        if song.phrases.is_empty() {
-            song.phrases.push(tracker_core::model::Phrase::default());
-        }
+        let song = Song::default(); // always has 1 phrase, 1 chain, 1 arrangement row
         Self {
             song,
-            view: View::PhraseEditor,
+            view: View::SongView,
             mode: InputMode::Normal,
             cursor_step: 0,
             octave: 4,
@@ -169,7 +183,7 @@ impl App {
             yy_pending: false,
             yanked_step: None,
             cmd_buf: String::new(),
-            status: "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string(),
+            status: "SONG  |  hjkl: nav  |  0-9: assign chain  |  Del: clear  |  Enter: chain view  |  SPC: play  |  q: quit".to_string(),
             producer,
             sample_root,
             seq_playing,
@@ -179,15 +193,25 @@ impl App {
             instr_edit_buf: String::new(),
             browser_entries: Vec::new(),
             browser_cursor: 0,
+            active_phrase_idx: 0,
+            view_stack: Vec::new(),
+            song_cursor_row: 0,
+            song_cursor_track: 0,
+            chain_view_track: 0,
+            chain_view_row: 0,
+            chain_cursor: 0,
+            chain_insert_mode: false,
         }
     }
 
     fn phrase_mut(&mut self) -> &mut tracker_core::model::Phrase {
-        &mut self.song.phrases[0]
+        let idx = self.active_phrase_idx.min(self.song.phrases.len().saturating_sub(1));
+        &mut self.song.phrases[idx]
     }
 
     fn phrase(&self) -> &tracker_core::model::Phrase {
-        &self.song.phrases[0]
+        let idx = self.active_phrase_idx.min(self.song.phrases.len().saturating_sub(1));
+        &self.song.phrases[idx]
     }
 
     /// Send a command to the audio thread (fire-and-forget).
@@ -204,13 +228,23 @@ impl App {
         self.send_cmd(Command::SetSampleRoot(self.sample_root));
     }
 
+    /// Send the full song data snapshot to the audio thread for arrangement playback.
+    fn sync_song_to_sequencer(&mut self) {
+        let arrangement = self.song.arrangement.clone();
+        let chains = self.song.chains.clone();
+        let phrases = self.song.phrases.clone();
+        let instruments = self.song.instruments.clone();
+        self.send_cmd(Command::UpdateSongData { arrangement, chains, phrases, instruments });
+        self.send_cmd(Command::SetSampleRoot(self.sample_root));
+    }
+
     /// Toggle play / stop.
     fn toggle_play(&mut self) {
         if self.seq_playing.load(Ordering::Relaxed) {
             self.send_cmd(Command::Stop);
             self.seq_playing.store(false, Ordering::Relaxed);
         } else {
-            self.sync_phrase_to_sequencer();
+            self.sync_song_to_sequencer();
             self.send_cmd(Command::Play);
             self.seq_playing.store(true, Ordering::Relaxed);
         }
@@ -218,7 +252,7 @@ impl App {
 
     /// Restart sequencer from step 0 (F5).
     fn restart_play(&mut self) {
-        self.sync_phrase_to_sequencer();
+        self.sync_song_to_sequencer();
         self.send_cmd(Command::Restart);
         self.seq_playing.store(true, Ordering::Relaxed);
     }
@@ -235,7 +269,7 @@ impl App {
         if self.song.instruments.len() < MAX_INSTRUMENTS {
             self.ensure_instrument(self.active_instrument);
         }
-        self.view = View::InstrumentEditor;
+        self.push_view(View::InstrumentEditor);
         self.instr_cursor = 0;
         self.instr_editing = false;
         self.instr_edit_buf.clear();
@@ -304,7 +338,7 @@ impl App {
     fn open_sample_browser(&mut self) {
         self.browser_entries = list_wav_files(".");
         self.browser_cursor = 0;
-        self.view = View::SampleBrowser;
+        self.push_view(View::SampleBrowser);
     }
 
     /// Confirm selection in the sample browser — loads the file into the active instrument.
@@ -314,7 +348,7 @@ impl App {
             if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
                 instr.sample = Some(tracker_core::model::Sample::from_path(&path));
             }
-            self.view = View::InstrumentEditor;
+            self.pop_view();
             self.reload_instrument_sample();
         }
     }
@@ -323,6 +357,34 @@ impl App {
     fn adjust_bpm(&mut self, delta: f32) {
         self.song.bpm = (self.song.bpm + delta).clamp(20.0, 999.0);
         self.send_cmd(Command::SetBpm(self.song.bpm));
+    }
+
+    /// Push the current view onto the navigation stack and switch to `next`.
+    fn push_view(&mut self, next: View) {
+        let current = std::mem::replace(&mut self.view, next);
+        self.view_stack.push(current);
+    }
+
+    /// Pop the navigation stack and return to the previous view.
+    fn pop_view(&mut self) {
+        if let Some(prev) = self.view_stack.pop() {
+            self.view = prev;
+        }
+        // Clear mode when returning to PhraseEditor
+        if matches!(self.view, View::PhraseEditor) {
+            self.mode = InputMode::Normal;
+        }
+        // Clear chain insert mode when leaving ChainView
+        self.chain_insert_mode = false;
+    }
+
+    /// Ensure chain slots exist up to and including `chain_idx`.
+    pub fn ensure_chain(&mut self, chain_idx: usize) {
+        while self.song.chains.len() <= chain_idx {
+            self.song.chains.push(Chain {
+                slots: vec![ChainSlot { phrase: 0, transpose: 0 }],
+            });
+        }
     }
 
     /// Enter a note at the current step and advance the cursor.
@@ -368,6 +430,7 @@ impl App {
                     }
                     self.sync_phrase_to_sequencer();
                     self.reload_instruments();
+                    self.sync_song_to_sequencer();
                     self.status = format!("Loaded: {path}");
                 }
                 Err(e) => self.status = format!("Error: {e}"),
@@ -474,8 +537,8 @@ fn start_audio_stream(
                     Command::NoteOn { slot, speed } => mixer.trigger(slot as usize, speed),
                     Command::NoteOff(slot) => mixer.stop_slot(slot as usize),
                     Command::Play => {
-                        if let Some(speed) = sequencer.play() {
-                            mixer.trigger(0, speed);
+                        for (track, speed) in sequencer.play() {
+                            mixer.trigger(track, speed);
                         }
                         seq_playing.store(true, Ordering::Relaxed);
                     }
@@ -484,8 +547,8 @@ fn start_audio_stream(
                         seq_playing.store(false, Ordering::Relaxed);
                     }
                     Command::Restart => {
-                        if let Some(speed) = sequencer.restart() {
-                            mixer.trigger(0, speed);
+                        for (track, speed) in sequencer.restart() {
+                            mixer.trigger(track, speed);
                         }
                         current_step.store(0, Ordering::Relaxed);
                         seq_playing.store(true, Ordering::Relaxed);
@@ -506,15 +569,18 @@ fn start_audio_stream(
                     Command::SetInterpMode { slot, interp_mode } => {
                         mixer.set_interp_mode(slot as usize, interp_mode);
                     }
+                    Command::UpdateSongData { arrangement, chains, phrases, instruments } => {
+                        sequencer.update_song_data(arrangement, chains, phrases, instruments);
+                    }
                 }
             }
 
             // Advance the sequencer and trigger notes.
             let events = sequencer.advance(frames);
-            for (step_idx, maybe_speed) in events {
-                current_step.store(step_idx, Ordering::Relaxed);
-                if let Some(speed) = maybe_speed {
-                    mixer.trigger(0, speed);
+            for event in &events {
+                current_step.store(event.step_index, Ordering::Relaxed);
+                for &(track, speed) in &event.notes {
+                    mixer.trigger(track, speed);
                 }
             }
 
@@ -533,6 +599,7 @@ fn start_audio_stream(
 fn render_phrase_grid(
     phrase: &tracker_core::model::Phrase,
     cursor_step: usize,
+    phrase_idx: usize,
 ) -> Table<'static> {
     let rows: Vec<Row> = phrase
         .steps
@@ -592,7 +659,141 @@ fn render_phrase_grid(
     )
     .block(
         Block::default()
-            .title("Phrase 00")
+            .title(format!("Phrase {:02X}", phrase_idx))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    )
+}
+
+// ── Song view render ──────────────────────────────────────────────────────────
+
+fn render_song_view(app: &App) -> Table<'static> {
+    let header_cells: Vec<Cell> = std::iter::once(Cell::from(" "))
+        .chain((0..TRACKS).map(|t| {
+            Cell::from(format!("TRK{t}")).style(
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        }))
+        .collect();
+    let header = Row::new(header_cells);
+
+    let rows: Vec<Row> = app
+        .song
+        .arrangement
+        .iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            let row_num = Cell::from(format!("{row_idx:02}")).style(if row_idx == app.song_cursor_row {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if row_idx % 4 == 0 {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            });
+
+            let cells: Vec<Cell> = std::iter::once(row_num)
+                .chain(row.iter().enumerate().map(|(track, chain_opt)| {
+                    let text = chain_opt.map(|c| format!("{c:02X}")).unwrap_or_else(|| "--".to_string());
+                    let is_cursor = row_idx == app.song_cursor_row && track == app.song_cursor_track;
+                    Cell::from(text).style(if is_cursor {
+                        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                    } else if chain_opt.is_some() {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    })
+                }))
+                .collect();
+            Row::new(cells)
+        })
+        .collect();
+
+    let mut constraints = vec![Constraint::Length(3)]; // row number
+    constraints.extend(std::iter::repeat(Constraint::Length(5)).take(TRACKS));
+
+    Table::new(rows, constraints)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    "SONG  [{} rows  |  {} chains]",
+                    app.song.arrangement.len(),
+                    app.song.chains.len()
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+}
+
+// ── Chain view render ─────────────────────────────────────────────────────────
+
+fn render_chain_view(app: &App) -> Table<'static> {
+    let track = app.chain_view_track;
+    let row = app.chain_view_row;
+    let chain_idx = app
+        .song
+        .arrangement
+        .get(row)
+        .and_then(|r| r[track])
+        .map(|c| c as usize);
+
+    let chain_slots = chain_idx
+        .and_then(|ci| app.song.chains.get(ci))
+        .map(|c| c.slots.as_slice())
+        .unwrap_or(&[]);
+
+    let rows: Vec<Row> = chain_slots
+        .iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let is_cursor = i == app.chain_cursor;
+            let row_style = if is_cursor {
+                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if i % 4 == 0 {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let phrase_style = if is_cursor {
+                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            Row::new(vec![
+                Cell::from(format!("{i:02}")).style(row_style),
+                Cell::from(format!("{:02X}", slot.phrase)).style(phrase_style),
+                Cell::from(format!("{:+}", slot.transpose)).style(row_style),
+            ])
+        })
+        .collect();
+
+    let display_rows = if rows.is_empty() {
+        vec![Row::new(vec![
+            Cell::from("--"),
+            Cell::from("--").style(Style::default().fg(Color::DarkGray)),
+            Cell::from("--").style(Style::default().fg(Color::DarkGray)),
+        ])]
+    } else {
+        rows
+    };
+
+    let chain_title = if let Some(ci) = chain_idx {
+        format!("Chain {:02X}  [Track {}  Row {}]", ci, track, row)
+    } else {
+        format!("Chain --  [Track {}  Row {}]  (no chain assigned)", track, row)
+    };
+
+    Table::new(
+        display_rows,
+        [Constraint::Length(3), Constraint::Length(5), Constraint::Length(6)],
+    )
+    .header(
+        Row::new(vec!["#", "PHR", "TRANS"])
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    )
+    .block(
+        Block::default()
+            .title(chain_title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     )
@@ -809,9 +1010,17 @@ fn run_tui(
 
             // Main area — depends on active view
             match app.view {
+                View::SongView => {
+                    let table = render_song_view(&app);
+                    frame.render_widget(table, outer[0]);
+                }
+                View::ChainView => {
+                    let table = render_chain_view(&app);
+                    frame.render_widget(table, outer[0]);
+                }
                 View::PhraseEditor => {
                     let phrase = app.phrase();
-                    let table = render_phrase_grid(phrase, app.cursor_step);
+                    let table = render_phrase_grid(phrase, app.cursor_step, app.active_phrase_idx);
                     frame.render_widget(table, outer[0]);
                 }
                 View::InstrumentEditor => {
@@ -834,6 +1043,16 @@ fn run_tui(
             };
 
             let status_text = match app.view {
+                View::SongView => format!(
+                    "{transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row  F3: phrase  q: quit"
+                ),
+                View::ChainView => {
+                    if app.chain_insert_mode {
+                        "CHAIN INSERT  |  h/l: phrase ±1  ,/.: transpose ±1  Esc: normal".to_string()
+                    } else {
+                        "CHAIN  |  j/k: nav  h/l: phrase  ,/.: transpose  a: add slot  d: del slot  Enter: phrase  i: insert  Esc: back".to_string()
+                    }
+                }
                 View::PhraseEditor => match app.mode {
                     InputMode::Normal => format!("{transport}  |  {}", app.status),
                     InputMode::Insert => format!(
@@ -872,6 +1091,262 @@ fn run_tui(
             if let Event::Key(key) = event::read()? {
                 match app.view {
                     // ──────────────────────────────────────────────────────────
+                    // Song view key handling
+                    // ──────────────────────────────────────────────────────────
+                    View::SongView => match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char(' ') => app.toggle_play(),
+                        KeyCode::F(5) => app.restart_play(),
+                        KeyCode::Left => app.adjust_bpm(-1.0),
+                        KeyCode::Right => app.adjust_bpm(1.0),
+                        KeyCode::Char(':') => {
+                            app.push_view(View::PhraseEditor);
+                            app.mode = InputMode::Command;
+                            app.cmd_buf.clear();
+                        }
+                        // Navigation
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            let rows = app.song.arrangement.len();
+                            if rows == 0 || app.song_cursor_row + 1 >= rows {
+                                // Auto-append a new empty row when j goes past the last
+                                let empty_row = [None; TRACKS];
+                                app.song.arrangement.push(empty_row);
+                            }
+                            app.song_cursor_row = (app.song_cursor_row + 1)
+                                .min(app.song.arrangement.len().saturating_sub(1));
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if app.song_cursor_row > 0 {
+                                app.song_cursor_row -= 1;
+                            }
+                        }
+                        KeyCode::Char('h') => {
+                            if app.song_cursor_track > 0 {
+                                app.song_cursor_track -= 1;
+                            }
+                        }
+                        KeyCode::Char('l') => {
+                            if app.song_cursor_track < TRACKS - 1 {
+                                app.song_cursor_track += 1;
+                            }
+                        }
+                        // Assign chain via hex digit (0-9 → chains 0-9, a-f → chains 10-15)
+                        KeyCode::Char(c) if c.is_ascii_hexdigit() && c != 'j' && c != 'k' && c != 'h' && c != 'l' => {
+                            if let Ok(chain_idx) = u8::from_str_radix(&c.to_string(), 16) {
+                                let row = app.song_cursor_row;
+                                let track = app.song_cursor_track;
+                                while app.song.arrangement.len() <= row {
+                                    app.song.arrangement.push([None; TRACKS]);
+                                }
+                                app.ensure_chain(chain_idx as usize);
+                                app.song.arrangement[row][track] = Some(chain_idx);
+                                app.sync_song_to_sequencer();
+                            }
+                        }
+                        // Clear cell
+                        KeyCode::Delete | KeyCode::Char('x') => {
+                            let row = app.song_cursor_row;
+                            let track = app.song_cursor_track;
+                            if let Some(arr_row) = app.song.arrangement.get_mut(row) {
+                                arr_row[track] = None;
+                                app.sync_song_to_sequencer();
+                            }
+                        }
+                        // Append row with 'o'
+                        KeyCode::Char('o') => {
+                            app.song.arrangement.push([None; TRACKS]);
+                        }
+                        // Drill into chain view on Enter
+                        KeyCode::Enter => {
+                            let row = app.song_cursor_row;
+                            let track = app.song_cursor_track;
+                            app.chain_view_track = track;
+                            app.chain_view_row = row;
+                            app.chain_cursor = 0;
+                            app.chain_insert_mode = false;
+                            app.push_view(View::ChainView);
+                        }
+                        // Tab → phrase editor (direct jump)
+                        KeyCode::Tab => {
+                            app.push_view(View::PhraseEditor);
+                            app.mode = InputMode::Normal;
+                        }
+                        // F3 → phrase editor; F4 → instrument editor
+                        KeyCode::F(3) => {
+                            app.push_view(View::PhraseEditor);
+                        }
+                        KeyCode::F(4) => {
+                            app.push_view(View::InstrumentEditor);
+                        }
+                        _ => {}
+                    },
+
+                    // ──────────────────────────────────────────────────────────
+                    // Chain view key handling
+                    // ──────────────────────────────────────────────────────────
+                    View::ChainView => {
+                        let track = app.chain_view_track;
+                        let row = app.chain_view_row;
+                        let chain_idx_opt = app.song.arrangement
+                            .get(row)
+                            .and_then(|r| r[track])
+                            .map(|c| c as usize);
+
+                        if app.chain_insert_mode {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.chain_insert_mode = false;
+                                }
+                                // h/l: adjust phrase index
+                                KeyCode::Char('h') | KeyCode::Left => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.phrase = slot.phrase.saturating_sub(1)
+                                                .min(app.song.phrases.len().saturating_sub(1) as u8);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('l') | KeyCode::Right => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                // ,/. : adjust transpose (semitones down/up)
+                                KeyCode::Char(',') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('.') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.transpose = slot.transpose.saturating_add(1);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // Normal mode
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Backspace => app.pop_view(),
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let len = app.song.chains[ci].slots.len();
+                                        if len > 0 {
+                                            app.chain_cursor = (app.chain_cursor + 1) % len;
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let len = app.song.chains[ci].slots.len();
+                                        if len > 0 {
+                                            app.chain_cursor = (app.chain_cursor + len - 1) % len;
+                                        }
+                                    }
+                                }
+                                // h/l: adjust phrase index in normal mode too
+                                KeyCode::Char('h') | KeyCode::Left => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.phrase = slot.phrase.saturating_sub(1);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('l') | KeyCode::Right => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                // ,/. : adjust transpose
+                                KeyCode::Char(',') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('.') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
+                                            slot.transpose = slot.transpose.saturating_add(1);
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                // i: enter insert mode
+                                KeyCode::Char('i') => {
+                                    if chain_idx_opt.is_some() {
+                                        app.chain_insert_mode = true;
+                                    }
+                                }
+                                // a: append slot
+                                KeyCode::Char('a') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
+                                        app.song.chains[ci].slots.push(ChainSlot {
+                                            phrase: max_phrase.min(app.chain_cursor as u8),
+                                            transpose: 0,
+                                        });
+                                        app.chain_cursor = app.song.chains[ci].slots.len() - 1;
+                                        app.sync_song_to_sequencer();
+                                    }
+                                }
+                                // d: delete current slot
+                                KeyCode::Char('d') | KeyCode::Delete => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        let len = app.song.chains[ci].slots.len();
+                                        if len > 0 {
+                                            app.song.chains[ci].slots.remove(app.chain_cursor);
+                                            if app.chain_cursor >= app.song.chains[ci].slots.len() && app.chain_cursor > 0 {
+                                                app.chain_cursor -= 1;
+                                            }
+                                            app.sync_song_to_sequencer();
+                                        }
+                                    }
+                                }
+                                // Enter: drill into PhraseEditor for selected slot
+                                KeyCode::Enter => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        if let Some(slot) = app.song.chains[ci].slots.get(app.chain_cursor) {
+                                            let phrase_idx = slot.phrase as usize;
+                                            while app.song.phrases.len() <= phrase_idx {
+                                                app.song.phrases.push(tracker_core::model::Phrase::default());
+                                            }
+                                            app.active_phrase_idx = phrase_idx;
+                                            app.push_view(View::PhraseEditor);
+                                            app.mode = InputMode::Normal;
+                                        }
+                                    }
+                                }
+                                // F1: song view (back), F3: phrase editor
+                                KeyCode::F(1) => app.pop_view(),
+                                KeyCode::F(3) => {
+                                    app.push_view(View::PhraseEditor);
+                                    app.mode = InputMode::Normal;
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
+
+                    // ──────────────────────────────────────────────────────────
                     // Phrase editor key handling
                     // ──────────────────────────────────────────────────────────
                     View::PhraseEditor => match app.mode {
@@ -879,7 +1354,13 @@ fn run_tui(
                         InputMode::Normal => {
                             app.yy_pending = false;
                             match key.code {
+                                KeyCode::Esc => app.pop_view(),
                                 KeyCode::Char('q') => break,
+                                KeyCode::F(1) => {
+                                    // Go to Song View (top)
+                                    app.view_stack.clear();
+                                    app.view = View::SongView;
+                                }
                                 KeyCode::Char(':') => {
                                     app.mode = InputMode::Command;
                                     app.cmd_buf.clear();
@@ -1046,8 +1527,7 @@ fn run_tui(
                             // Normal instrument editor navigation
                             match key.code {
                                 KeyCode::Esc => {
-                                    // Return to phrase editor
-                                    app.view = View::PhraseEditor;
+                                    app.pop_view();
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
                                     app.instr_cursor =
@@ -1102,7 +1582,7 @@ fn run_tui(
                     // ──────────────────────────────────────────────────────────
                     View::SampleBrowser => match key.code {
                         KeyCode::Esc => {
-                            app.view = View::InstrumentEditor;
+                            app.pop_view();
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
                             if !app.browser_entries.is_empty() {
@@ -1490,6 +1970,66 @@ mod tests {
         // Simulate Esc — cancel
         app.view = View::InstrumentEditor;
         assert!(matches!(app.view, View::InstrumentEditor));
+    }
+
+    #[test]
+    fn song_view_assign_chain_persists() {
+        let mut app = make_app();
+        app.song_cursor_row = 0;
+        app.song_cursor_track = 1;
+        // Simulate assigning chain 0 to track 1
+        app.ensure_chain(0);
+        app.song.arrangement[0][1] = Some(0);
+        assert_eq!(app.song.arrangement[0][1], Some(0));
+    }
+
+    #[test]
+    fn song_view_clear_chain() {
+        let mut app = make_app();
+        app.song.arrangement[0][0] = Some(5);
+        app.song.arrangement[0][0] = None;
+        assert_eq!(app.song.arrangement[0][0], None);
+    }
+
+    #[test]
+    fn chain_view_transpose_adjusts() {
+        let mut app = make_app();
+        // Chain 0 exists from default
+        app.chain_view_track = 0;
+        app.chain_view_row = 0;
+        app.chain_cursor = 0;
+        let ci = 0usize;
+        app.song.chains[ci].slots[0].transpose = 5;
+        assert_eq!(app.song.chains[ci].slots[0].transpose, 5);
+        app.song.chains[ci].slots[0].transpose += 1;
+        assert_eq!(app.song.chains[ci].slots[0].transpose, 6);
+    }
+
+    #[test]
+    fn arrangement_roundtrip_bincode() {
+        let mut app = make_app();
+        app.song.arrangement[0][0] = Some(0);
+        app.song.arrangement[0][3] = Some(2);
+        app.ensure_chain(2);
+
+        let path = std::env::temp_dir().join("tracker_arrangement_roundtrip.trk");
+        let path_str = path.to_str().unwrap().to_string();
+
+        app.mode = InputMode::Command;
+        app.cmd_buf = format!("w {path_str}");
+        app.execute_command();
+        assert!(app.status.starts_with("Saved:"), "save failed: {}", app.status);
+
+        let saved_arr = app.song.arrangement.clone();
+
+        app.song = Song::default();
+        app.mode = InputMode::Command;
+        app.cmd_buf = format!("e {path_str}");
+        app.execute_command();
+        assert!(app.status.starts_with("Loaded:"), "load failed: {}", app.status);
+
+        assert_eq!(app.song.arrangement, saved_arr, "arrangement should survive round-trip");
+        std::fs::remove_file(&path).ok();
     }
 }
 
