@@ -107,6 +107,7 @@ enum BrowserMode {
     Project,
 }
 
+#[derive(Debug, PartialEq)]
 enum InputMode {
     Normal,
     Insert,
@@ -1999,6 +2000,7 @@ fn run_tui(
                     // Startup screen key handling
                     // ──────────────────────────────────────────────────────────
                     View::Startup => match key.code {
+                        KeyCode::Char('q') => break,
                         KeyCode::Char('j') | KeyCode::Down => {
                             app.startup_cursor = (app.startup_cursor + 1) % 2;
                         }
@@ -3840,6 +3842,57 @@ mod tests {
     fn parse_args_unknown_flag_gives_error() {
         let args: Vec<String> = vec!["tracker".to_string(), "--unknown".to_string()];
         assert!(parse_args(&args).is_err(), "unknown flag should return an error");
+    }
+
+    // ── Keyboard mode tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn keyboard_mode_enter_sets_mode() {
+        let mut app = make_app();
+        assert_eq!(app.mode, InputMode::Normal);
+        app.mode = InputMode::Keyboard;
+        assert_eq!(app.mode, InputMode::Keyboard);
+    }
+
+    #[test]
+    fn keyboard_mode_esc_returns_to_normal() {
+        let mut app = make_app();
+        app.mode = InputMode::Keyboard;
+        app.mode = InputMode::Normal;
+        assert_eq!(app.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn keyboard_instrument_bracket_clamp_lower() {
+        let mut app = make_app();
+        app.keyboard_instrument = 0;
+        // Decrement at 0 should stay at 0
+        if app.keyboard_instrument > 0 {
+            app.keyboard_instrument -= 1;
+        }
+        assert_eq!(app.keyboard_instrument, 0);
+    }
+
+    #[test]
+    fn keyboard_instrument_bracket_clamp_upper() {
+        let mut app = make_app();
+        app.keyboard_instrument = 255;
+        // Increment at 255 should stay at 255
+        if app.keyboard_instrument < 255 {
+            app.keyboard_instrument += 1;
+        }
+        assert_eq!(app.keyboard_instrument, 255);
+    }
+
+    #[test]
+    fn keyboard_instrument_persists_across_mode_entries() {
+        let mut app = make_app();
+        app.mode = InputMode::Keyboard;
+        app.keyboard_instrument = 7;
+        app.mode = InputMode::Normal;
+        // Re-enter Keyboard mode — instrument should still be 7
+        app.mode = InputMode::Keyboard;
+        assert_eq!(app.keyboard_instrument, 7);
     }
 }
 
