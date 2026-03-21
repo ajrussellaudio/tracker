@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 pub const STEPS_PER_PHRASE: usize = 16;
 pub const FX_SLOTS_PER_STEP: usize = 4;
 /// Number of simultaneous tracks in the sequencer.
@@ -180,6 +180,29 @@ pub struct Chain {
     pub slots: Vec<ChainSlot>,
 }
 
+// ── MixerTrack ────────────────────────────────────────────────────────────────
+
+/// Per-track mixer state persisted in the Song.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MixerTrack {
+    /// Output volume multiplier (0.0 = silent, 1.0 = unity gain, 2.0 = double).
+    pub volume: f32,
+    /// Stereo pan position (-1.0 = full left, 0.0 = centre, 1.0 = full right).
+    pub pan: f32,
+    /// When true the track produces no audio output.
+    pub mute: bool,
+    /// When true (and at least one track is soloed) all non-soloed tracks are silent.
+    pub solo: bool,
+    /// FX send level (0.0–1.0).  Stored and displayed but not yet routed to any bus.
+    pub fx_send: f32,
+}
+
+impl Default for MixerTrack {
+    fn default() -> Self {
+        Self { volume: 1.0, pan: 0.0, mute: false, solo: false, fx_send: 0.0 }
+    }
+}
+
 // ── Song (top-level document) ─────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -197,6 +220,9 @@ pub struct Song {
     /// Playback strategy: loops back to row 0 when the last row is exhausted,
     /// so a single-row arrangement produces an infinite phrase loop.
     pub arrangement: Vec<[Option<u8>; TRACKS]>,
+    /// Per-track mixer state (volume, pan, mute, solo, FX send).
+    #[serde(default)]
+    pub mixer: [MixerTrack; TRACKS],
 }
 
 impl Default for Song {
@@ -215,6 +241,7 @@ impl Default for Song {
                 slots: vec![ChainSlot { phrase: 0, transpose: 0 }],
             }],
             arrangement: vec![[Some(0), None, None, None, None, None, None, None]],
+            mixer: Default::default(),
         }
     }
 }
@@ -228,7 +255,38 @@ impl Default for Song {
 ///   v1 → v2: Chain `phrases: Vec<u8>` replaced by `slots: Vec<ChainSlot>`;
 ///            `Song::arrangement` added. Binary (.trk) v1 files are not
 ///            layout-compatible (will return a deserialization error on load).
+///   v2 → v3: `Song::mixer` field added (per-track vol/pan/mute/solo/FX send).
+///            Missing field defaults to all-unity (volume=1, pan=0, rest false/zero).
 pub fn migrate(mut song: Song) -> Song {
     song.version = CURRENT_VERSION;
     song
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn song_deserializes_without_mixer_field() {
+        // Simulates loading a v2 JSON file that pre-dates the mixer field.
+        // #[serde(default)] on Song::mixer must prevent a "missing field" error.
+        let json = r#"{
+            "version": 2,
+            "name": "",
+            "bpm": 120.0,
+            "instruments": [],
+            "samples": [],
+            "phrases": [{"steps": []}],
+            "chains": [{"slots": [{"phrase": 0, "transpose": 0}]}],
+            "arrangement": [[0, null, null, null, null, null, null, null]]
+        }"#;
+        let song: Song = serde_json::from_str(json).expect("v2 JSON should deserialise without mixer field");
+        // All tracks should default to unity gain
+        for track in &song.mixer {
+            assert!((track.volume - 1.0).abs() < f32::EPSILON);
+            assert!((track.pan).abs() < f32::EPSILON);
+            assert!(!track.mute);
+            assert!(!track.solo);
+        }
+    }
 }

@@ -59,3 +59,11 @@ Status: done
 Branch: ralph/issue-9
 PR: #22
 Summary: Added FxCommand enum (VOL/PAN/PIT/RET) with dispatch-table design; StepEvent carries per-track FX arrays; Voice/Mixer gain trigger_with_fx for per-step volume/pan; sequencer apply FX at step time; RET schedules buffer-granularity retriggers; phrase grid expanded to 11 cols with 2D cursor (h/l nav, insert mode for cmd/val entry). 64 tests pass (7 new).
+
+## Iteration 3 — Sat 21 Mar 2026 10:17:15 UTC
+
+## Issue #10 — Mixer view: per-track vol/pan/mute/solo/FX send
+Status: done
+Branch: ralph/issue-10
+PR: #23
+Summary: Added MixerTrack struct to Song (volume/pan/mute/solo/fx_send), persisted via bincode/JSON. Four new Command variants drive immediate playback changes (mute silences track, solo silences others). View::Mixer screen (F2 to open) renders 8-track×5-field grid with Cyan cursor, red mute, yellow solo indicators. 74 tests pass (8 new).

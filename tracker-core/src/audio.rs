@@ -45,6 +45,14 @@ pub enum Command {
         phrases: Vec<Phrase>,
         instruments: Vec<Instrument>,
     },
+    /// Set the output volume for track `track` (0.0–2.0).  Takes effect immediately.
+    SetTrackVolume { track: u8, volume: f32 },
+    /// Set the stereo pan for track `track` (-1.0 to 1.0).  Takes effect immediately.
+    SetTrackPan { track: u8, pan: f32 },
+    /// Mute or unmute track `track`.  A muted track fires no NoteOn events.
+    SetTrackMute { track: u8, mute: bool },
+    /// Toggle solo on track `track`.  When any track is soloed, non-soloed tracks are silent.
+    SetTrackSolo { track: u8, active: bool },
 }
 
 /// 4-point Hermite cubic interpolation for the "Sinc" quality mode.
@@ -80,7 +88,7 @@ pub struct Voice {
     pub loop_end: u32,
     /// Interpolation quality.
     pub interp_mode: InterpMode,
-    /// Per-step volume override (0.0–1.0).  Reset to 1.0 on each trigger.
+    /// Per-step volume override (0.0–2.0).  Reset to 1.0 on each trigger.
     volume: f32,
     /// Per-step pan override (-1.0=full left, 0.0=centre, 1.0=full right).  Reset on trigger.
     pan: f32,
@@ -138,7 +146,7 @@ impl Voice {
         self.frame_pos = self.loop_start as f64;
         self.speed = speed as f64;
         self.active = true;
-        self.volume = volume.clamp(0.0, 1.0);
+        self.volume = volume.clamp(0.0, 2.0);
         self.pan = pan.clamp(-1.0, 1.0);
     }
 
@@ -1000,6 +1008,31 @@ mod tests {
         assert!(
             (ratio - 0.5).abs() < 0.01,
             "half-volume should give ~0.5× RMS, got ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn voice_vol_fx_above_unity_amplifies_output() {
+        let buf = sine_buffer(1024);
+        let mut voice_full = Voice::new(buf.clone(), 1);
+        let mut voice_loud = Voice::new(buf, 1);
+
+        voice_full.trigger_with_fx(1.0, 1.0, 0.0);
+        voice_loud.trigger_with_fx(1.0, 1.5, 0.0);
+
+        let mut out_full = vec![0.0f32; 512 * 2];
+        let mut out_loud = vec![0.0f32; 512 * 2];
+        voice_full.render(&mut out_full);
+        voice_loud.render(&mut out_loud);
+
+        let rms_full: f32 =
+            (out_full.iter().map(|s| s * s).sum::<f32>() / out_full.len() as f32).sqrt();
+        let rms_loud: f32 =
+            (out_loud.iter().map(|s| s * s).sum::<f32>() / out_loud.len() as f32).sqrt();
+        let ratio = rms_loud / rms_full;
+        assert!(
+            (ratio - 1.5).abs() < 0.01,
+            "volume=1.5 should give ~1.5× RMS, got ratio={ratio}"
         );
     }
 

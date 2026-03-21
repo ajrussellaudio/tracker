@@ -3,8 +3,8 @@ pub mod model;
 pub mod storage;
 
 pub use model::{
-    Chain, ChainSlot, FxCommand, FxSlot, Instrument, InterpMode, Phrase, Sample, Song, Step,
-    CURRENT_VERSION, FX_SLOTS_PER_STEP, STEPS_PER_PHRASE, TRACKS,
+    Chain, ChainSlot, FxCommand, FxSlot, Instrument, InterpMode, MixerTrack, Phrase, Sample,
+    Song, Step, CURRENT_VERSION, FX_SLOTS_PER_STEP, STEPS_PER_PHRASE, TRACKS,
 };
 
 pub use audio::{Sequencer, StepEvent};
@@ -95,5 +95,38 @@ mod tests {
         song.version = 0;
         let migrated = model::migrate(song);
         assert_eq!(migrated.version, CURRENT_VERSION);
+    }
+
+    #[test]
+    fn song_default_mixer_is_unity_gain() {
+        let song = Song::default();
+        for t in 0..TRACKS {
+            let m = &song.mixer[t];
+            assert!((m.volume - 1.0).abs() < 1e-4, "track {t} default volume should be 1.0");
+            assert!(m.pan.abs() < 1e-4, "track {t} default pan should be 0.0");
+            assert!(!m.mute, "track {t} should not be muted by default");
+            assert!(!m.solo, "track {t} should not be soloed by default");
+        }
+    }
+
+    #[test]
+    fn mixer_state_roundtrips_bincode() {
+        let mut song = make_test_song();
+        song.mixer[0].volume = 0.5;
+        song.mixer[1].mute = true;
+        song.mixer[2].solo = true;
+        song.mixer[3].pan = 0.75;
+
+        let path = std::env::temp_dir().join("tracker_mixer_state_roundtrip.trk");
+        let path_str = path.to_str().unwrap();
+
+        storage::save_trk(&song, path_str).expect("save failed");
+        let loaded = storage::load_trk(path_str).expect("load failed");
+        std::fs::remove_file(&path).ok();
+
+        assert!((loaded.mixer[0].volume - 0.5).abs() < 1e-4, "volume should persist");
+        assert!(loaded.mixer[1].mute, "mute should persist");
+        assert!(loaded.mixer[2].solo, "solo should persist");
+        assert!((loaded.mixer[3].pan - 0.75).abs() < 1e-4, "pan should persist");
     }
 }
