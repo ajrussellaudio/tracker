@@ -18,13 +18,21 @@ The binary is at `target/release/tracker`.
 
 ## Quick Start
 
+Launch with no arguments to see the startup screen:
+
 ```bash
-cargo run --release -- --sample path/to/file.wav
+cargo run --release
 ```
 
-> **Note:** `--sample` is required for audible playback. Without it, the sequencer runs silently.
+On the startup screen, choose **New Project** to open a blank song, or **Open File** to browse for a `.trk` project file.
 
-On launch you are placed in **Song View**. The status bar at the bottom shows the current BPM and transport state (`■ stopped`). Press `Space` to play, `q` to quit.
+To open a project directly (useful in scripts or shell aliases), pass the path as a positional argument:
+
+```bash
+cargo run --release -- path/to/my-song.trk
+```
+
+On launch you are placed in **Song View**. The status bar at the bottom shows the current BPM and transport state. Press `Space` to play, `q` to quit.
 
 ---
 
@@ -230,7 +238,7 @@ Eight fields describing how a sample is played.
 
 ### Sample Browser
 
-Lists `.wav` files found in the current working directory.
+Lists `.wav` files and subdirectories in the current browsing directory.
 
 **Navigation to:** `Enter` or `i` on the Sample field in Instrument Editor
 
@@ -238,8 +246,29 @@ Lists `.wav` files found in the current working directory.
 |-----|--------|
 | `j` / `↓` | Move cursor down (wraps) |
 | `k` / `↑` | Move cursor up (wraps) |
-| `Enter` | Load selected file into active instrument |
-| `Esc` | Cancel and return to Instrument Editor |
+| `Enter` | Navigate into directory, or load selected file into active instrument |
+| `-` / `Backspace` | Navigate to parent directory |
+| `Esc` | Cancel and return to previous view |
+
+---
+
+### Startup Screen
+
+Shown when `tracker` is launched with no arguments.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `Enter` | Confirm selection |
+| `q` | Quit |
+
+**Options:**
+
+| Option | Effect |
+|--------|--------|
+| New Project | Open a blank song in Song View |
+| Open File | Browse for a `.trk` file to open |
 
 ---
 
