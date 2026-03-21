@@ -132,3 +132,98 @@ mod tests {
         assert!((loaded.mixer[3].pan - 0.75).abs() < 1e-4, "pan should persist");
     }
 }
+
+// ── Packed-song tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod packed_tests {
+    use super::*;
+    use model::{Instrument, InterpMode, Sample, Song};
+
+    /// Write a minimal 16-bit mono WAV file and return the raw bytes.
+    fn write_test_wav(dest_path: &str) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(dest_path, spec).unwrap();
+        for i in 0..64_i16 {
+            writer.write_sample(i.wrapping_mul(256)).unwrap();
+        }
+        writer.finalize().unwrap();
+        std::fs::read(dest_path).unwrap()
+    }
+
+    #[test]
+    fn packed_roundtrip_embeds_and_reloads_sample_bytes() {
+        let wav_path = std::env::temp_dir().join("tracker_packed_sample.wav");
+        let packed_path = std::env::temp_dir().join("tracker_packed_roundtrip.trk");
+        let wav_path_str = wav_path.to_str().unwrap();
+        let packed_path_str = packed_path.to_str().unwrap();
+
+        let original_bytes = write_test_wav(wav_path_str);
+
+        let mut song = Song::default();
+        song.instruments.push(Instrument {
+            name: "Hat".to_string(),
+            sample: Some(Sample::from_path(wav_path_str.to_string())),
+            root_note: 60,
+            loop_start: None,
+            loop_end: None,
+            interp_mode: InterpMode::None,
+            volume: 1.0,
+            pan: 0.0,
+        });
+
+        let failures =
+            storage::save_packed_trk(&song, packed_path_str).expect("pack failed");
+        assert!(failures.is_empty(), "unexpected pack failures: {failures:?}");
+
+        // Remove the original WAV — packed file must be self-contained.
+        std::fs::remove_file(&wav_path).ok();
+
+        // Load via the normal entry point (auto-detects packed magic).
+        let loaded = storage::load_trk(packed_path_str).expect("load packed failed");
+        std::fs::remove_file(&packed_path).ok();
+
+        let sample =
+            loaded.instruments[0].sample.as_ref().expect("sample should be present");
+        assert!(sample.embedded, "embedded flag should be set");
+        assert_eq!(sample.path, wav_path_str, "original path hint must be preserved");
+
+        let embedded =
+            sample.bytes.as_ref().expect("bytes should be populated after load");
+        assert_eq!(embedded, &original_bytes, "embedded bytes must match original WAV");
+    }
+
+    #[test]
+    fn packed_missing_sample_is_reported_not_fatal() {
+        let packed_path =
+            std::env::temp_dir().join("tracker_packed_missing.trk");
+        let packed_path_str = packed_path.to_str().unwrap();
+
+        let mut song = Song::default();
+        song.instruments.push(Instrument {
+            name: "Ghost".to_string(),
+            sample: Some(Sample::from_path("/nonexistent/ghost.wav")),
+            root_note: 60,
+            loop_start: None,
+            loop_end: None,
+            interp_mode: InterpMode::None,
+            volume: 1.0,
+            pan: 0.0,
+        });
+
+        let failures =
+            storage::save_packed_trk(&song, packed_path_str).expect("pack should not error");
+        std::fs::remove_file(&packed_path).ok();
+
+        assert_eq!(failures.len(), 1, "one failure expected for missing sample");
+        assert!(
+            failures[0].contains("ghost.wav"),
+            "failure message should name the missing file: {failures:?}"
+        );
+    }
+}

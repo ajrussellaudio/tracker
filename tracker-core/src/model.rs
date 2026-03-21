@@ -18,16 +18,36 @@ pub enum InterpMode {
 
 // ── Sample reference ──────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Sample {
     pub path: String,
     pub embedded: bool,
+    /// Raw WAV bytes when loaded from a packed `.trk` file. Not serialized.
+    #[serde(skip)]
+    pub bytes: Option<Vec<u8>>,
+}
+
+impl PartialEq for Sample {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.embedded == other.embedded
+    }
 }
 
 impl Sample {
     pub fn from_path(path: impl Into<String>) -> Self {
-        Self { path: path.into(), embedded: false }
+        Self { path: path.into(), embedded: false, bytes: None }
     }
+}
+
+// ── Packed song (self-contained bundle with embedded sample bytes) ────────────
+
+/// A packed project file: a [`Song`] plus raw WAV bytes for every referenced
+/// sample, keyed by the instrument's original sample path.
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct PackedSong {
+    pub song: Song,
+    /// `(original_path_hint, raw_wav_bytes)` — one entry per embedded sample.
+    pub samples: Vec<(String, Vec<u8>)>,
 }
 
 // ── Instrument ────────────────────────────────────────────────────────────────
