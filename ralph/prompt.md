@@ -7,12 +7,8 @@ You are working autonomously on the **tracker** project — a CLI/TUI sample-bas
 Before doing anything else, make sure the workspace is up to date:
 
 - Run `git fetch origin` to get the latest remote state.
-- Run `git checkout main && git pull --ff-only origin main` to land on a clean, current main.
-
-If you are resuming a partial iteration (a `ralph/issue-<N>` branch already exists with commits not yet in main):
-- Check whether that branch needs rebasing: `git log --oneline origin/main..ralph/issue-<N>`
-- If it's already ahead of main cleanly, check it out and continue from where you left off.
-- If it has diverged (main moved while you were working), rebase it onto main, resolve any conflicts, run `cargo test`, then continue.
+- Run `git reset --hard origin/main` to sync to the latest main.
+  (The worktree runs in detached HEAD mode — do not run `git checkout main`.)
 
 ## Step 1 — Get up to speed
 

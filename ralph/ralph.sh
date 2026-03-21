@@ -84,7 +84,7 @@ fi
 
 echo ""
 echo "  Creating worktree at $WORKTREE_DIR …"
-git -C "$GIT_ROOT" worktree add "$WORKTREE_DIR" main
+git -C "$GIT_ROOT" worktree add --detach "$WORKTREE_DIR" origin/main
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
