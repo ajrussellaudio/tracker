@@ -299,7 +299,11 @@ impl App {
     /// Push a fresh phrase snapshot to the sequencer.
     fn sync_phrase_to_sequencer(&mut self) {
         let phrase = Box::new(self.phrase().clone());
-        self.send_cmd(Command::UpdatePhrase(phrase));
+        self.send_cmd(Command::UpdatePhrase(phrase.clone()));
+        self.send_cmd(Command::UpdatePhraseInSong {
+            idx: self.active_phrase_idx,
+            phrase,
+        });
         self.send_cmd(Command::SetSampleRoot(self.sample_root));
     }
 
@@ -951,6 +955,9 @@ fn start_audio_stream(
                     }
                     Command::UpdateSongData { arrangement, chains, phrases, instruments } => {
                         sequencer.update_song_data(arrangement, chains, phrases, instruments);
+                    }
+                    Command::UpdatePhraseInSong { idx, phrase } => {
+                        sequencer.update_phrase_in_song(idx, phrase);
                     }
                     Command::SetTrackVolume { track, volume } => {
                         if (track as usize) < TRACKS {

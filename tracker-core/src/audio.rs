@@ -45,6 +45,9 @@ pub enum Command {
         phrases: Vec<Phrase>,
         instruments: Vec<Instrument>,
     },
+    /// Replace a single phrase in the sequencer's arrangement phrase table.
+    /// Cheaper than `UpdateSongData` — used for live phrase edits during playback.
+    UpdatePhraseInSong { idx: usize, phrase: Box<Phrase> },
     /// Set the output volume for track `track` (0.0–2.0).  Takes effect immediately.
     SetTrackVolume { track: u8, volume: f32 },
     /// Set the stereo pan for track `track` (-1.0 to 1.0).  Takes effect immediately.
@@ -433,6 +436,14 @@ impl Sequencer {
         self.chains = chains;
         self.phrases_data = phrases;
         self.instruments = instruments;
+    }
+
+    /// Patch a single phrase in `phrases_data` for live editing during playback.
+    /// Has no effect if `idx` is out of range (e.g. arrangement not yet loaded).
+    pub fn update_phrase_in_song(&mut self, idx: usize, phrase: Box<Phrase>) {
+        if let Some(slot) = self.phrases_data.get_mut(idx) {
+            *slot = *phrase;
+        }
     }
 
     /// Resolve the playback speed for `track` at `step_idx`, using the arrangement
@@ -1127,4 +1138,67 @@ mod tests {
             assert_eq!(slot.value, 0, "empty FX slot value should be 0");
         }
     }
+
+    #[test]
+    fn update_phrase_in_song_patches_live_during_playback() {
+        use crate::model::{Chain, ChainSlot, Phrase, TRACKS};
+
+        let mut seq = Sequencer::new(48000.0, 120.0);
+
+        // Initial phrase: step 0 = note 60 (speed 1.0 at root 60).
+        let mut p = Phrase::default();
+        p.steps[0].note = Some(60);
+
+        let chains = vec![Chain {
+            slots: vec![ChainSlot { phrase: 0, transpose: 0 }],
+        }];
+        let mut row = [None; TRACKS];
+        row[0] = Some(0);
+        let arrangement = vec![row];
+
+        seq.update_song_data(arrangement, chains, vec![p], vec![]);
+        seq.sample_root = 60;
+        let initial = seq.restart();
+
+        // Confirm step 0 fires at speed 1.0.
+        let t0_speed = initial.iter().find(|&&(t, _)| t == 0).map(|&(_, s)| s);
+        assert!(t0_speed.is_some(), "track 0 should fire on step 0");
+        assert!(
+            (t0_speed.unwrap() - 1.0).abs() < 1e-4,
+            "initial speed should be 1.0 (note 60, root 60)"
+        );
+
+        // Live edit: change phrase 0 step 0 to note 72 (+1 octave → speed 2.0).
+        let mut edited = Phrase::default();
+        edited.steps[0].note = Some(72);
+        seq.update_phrase_in_song(0, Box::new(edited));
+
+        // Advance a full phrase cycle (16 steps). The last event in this batch
+        // is step 0 wrapping around — it should use the updated phrase.
+        let events = seq.advance(16 * 6000);
+        assert_eq!(events.len(), 16, "should get exactly 16 step events");
+        let wrap_event = events.last().unwrap();
+        assert_eq!(wrap_event.step_index, 0, "last event should be step 0 after wrap");
+        assert!(
+            !wrap_event.notes.is_empty(),
+            "step 0 should have a note after the live edit"
+        );
+        let (track, speed, _) = &wrap_event.notes[0];
+        assert_eq!(*track, 0);
+        assert!(
+            (speed - 2.0).abs() < 1e-4,
+            "after live edit, speed should be 2.0 (note 72, root 60), got {speed}"
+        );
+    }
+
+    #[test]
+    fn update_phrase_in_song_out_of_range_is_ignored() {
+        use crate::model::Phrase;
+        let mut seq = Sequencer::new(48000.0, 120.0);
+        // No song data loaded — phrases_data is empty.
+        let phrase = Box::new(Phrase::default());
+        // Should not panic.
+        seq.update_phrase_in_song(99, phrase);
+    }
+
 }
