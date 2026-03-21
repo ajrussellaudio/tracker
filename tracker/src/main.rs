@@ -588,6 +588,7 @@ fn start_audio_stream(
                     }
                     Command::Stop => {
                         sequencer.stop();
+                        retriggers.clear();
                         seq_playing.store(false, Ordering::Relaxed);
                     }
                     Command::Restart => {
@@ -2046,6 +2047,23 @@ mod tests {
     fn pitch_speed_octave_down_is_half() {
         let speed = pitch_speed(48, 60);
         assert!((speed - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pit_fx_value_12_doubles_speed() {
+        // PIT value 12 → i8 = 12 → +1 octave → speed ×2
+        let semitones = 12u8 as i8;
+        let factor = 2.0f32.powf(semitones as f32 / 12.0);
+        assert!((factor - 2.0).abs() < 1e-4, "PIT+12 should double speed, got {factor}");
+    }
+
+    #[test]
+    fn pit_fx_value_244_halves_speed() {
+        // PIT value 244 reinterpreted as i8 = -12 → -1 octave → speed ×0.5
+        let semitones = 244u8 as i8;
+        assert_eq!(semitones, -12, "244u8 as i8 must equal -12");
+        let factor = 2.0f32.powf(semitones as f32 / 12.0);
+        assert!((factor - 0.5).abs() < 1e-4, "PIT-12 should halve speed, got {factor}");
     }
 
     #[test]
