@@ -1,3 +1,5 @@
+pub mod audio;
+
 /// Placeholder data model for the tracker project.
 pub struct Project {
     pub name: String,
