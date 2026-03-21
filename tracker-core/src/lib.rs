@@ -3,7 +3,7 @@ pub mod model;
 pub mod storage;
 
 pub use model::{
-    Chain, ChainSlot, FxSlot, Instrument, InterpMode, Phrase, Sample, Song, Step,
+    Chain, ChainSlot, FxCommand, FxSlot, Instrument, InterpMode, Phrase, Sample, Song, Step,
     CURRENT_VERSION, FX_SLOTS_PER_STEP, STEPS_PER_PHRASE, TRACKS,
 };
 

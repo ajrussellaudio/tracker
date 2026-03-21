@@ -61,6 +61,66 @@ impl Default for Instrument {
 
 // ── FX slot ───────────────────────────────────────────────────────────────────
 
+/// Registered FX command identifiers stored as u8 in `FxSlot::command`.
+///
+/// Adding a new command requires only: add a variant here + a handler branch in
+/// `audio.rs` — the `Step` struct and serialisation format stay unchanged.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum FxCommand {
+    /// Override track volume for this step (value 0–255 → 0.0–1.0).
+    Vol = 1,
+    /// Override track pan for this step (0=full left, 128=centre, 255=full right).
+    Pan = 2,
+    /// Pitch offset in semitones (value treated as signed i8, applied on top of note).
+    Pit = 3,
+    /// Retrigger: repeat the note `value` times within the step duration.
+    Ret = 4,
+}
+
+impl FxCommand {
+    /// Look up a command by its numeric ID (as stored in `FxSlot::command`).
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            1 => Some(Self::Vol),
+            2 => Some(Self::Pan),
+            3 => Some(Self::Pit),
+            4 => Some(Self::Ret),
+            _ => None,
+        }
+    }
+
+    /// Return the numeric ID for this command.
+    pub fn id(&self) -> u8 {
+        match self {
+            Self::Vol => 1,
+            Self::Pan => 2,
+            Self::Pit => 3,
+            Self::Ret => 4,
+        }
+    }
+
+    /// Parse a three-letter command code (case-insensitive).
+    pub fn from_code(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "VOL" => Some(Self::Vol),
+            "PAN" => Some(Self::Pan),
+            "PIT" => Some(Self::Pit),
+            "RET" => Some(Self::Ret),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical three-letter display code for this command.
+    pub fn to_code(&self) -> &'static str {
+        match self {
+            Self::Vol => "VOL",
+            Self::Pan => "PAN",
+            Self::Pit => "PIT",
+            Self::Ret => "RET",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct FxSlot {
     pub command: u8,

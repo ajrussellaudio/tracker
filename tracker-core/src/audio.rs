@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::model::{Chain, Instrument, InterpMode, Phrase, STEPS_PER_PHRASE, TRACKS};
+use crate::model::{Chain, FxSlot, Instrument, InterpMode, Phrase, FX_SLOTS_PER_STEP, STEPS_PER_PHRASE, TRACKS};
 
 /// Commands sent from the UI thread to the audio thread via a ring buffer.
 #[derive(Clone, Debug)]
@@ -80,6 +80,10 @@ pub struct Voice {
     pub loop_end: u32,
     /// Interpolation quality.
     pub interp_mode: InterpMode,
+    /// Per-step volume override (0.0–1.0).  Reset to 1.0 on each trigger.
+    volume: f32,
+    /// Per-step pan override (-1.0=full left, 0.0=centre, 1.0=full right).  Reset on trigger.
+    pan: f32,
 }
 
 impl Voice {
@@ -93,6 +97,8 @@ impl Voice {
             loop_start: 0,
             loop_end: 0,
             interp_mode: InterpMode::Linear,
+            volume: 1.0,
+            pan: 0.0,
         }
     }
 
@@ -121,10 +127,19 @@ impl Voice {
     }
 
     /// Re-trigger from the beginning with the given speed ratio.
+    /// Volume and pan are reset to defaults (1.0 and 0.0).
     pub fn trigger(&mut self, speed: f32) {
+        self.trigger_with_fx(speed, 1.0, 0.0);
+    }
+
+    /// Re-trigger with explicit FX-overridden volume and pan.
+    /// `pan` is in the range −1.0 (full left) to 1.0 (full right), 0.0 = centre.
+    pub fn trigger_with_fx(&mut self, speed: f32, volume: f32, pan: f32) {
         self.frame_pos = self.loop_start as f64;
         self.speed = speed as f64;
         self.active = true;
+        self.volume = volume.clamp(0.0, 1.0);
+        self.pan = pan.clamp(-1.0, 1.0);
     }
 
     pub fn stop(&mut self) {
@@ -205,8 +220,8 @@ impl Voice {
                 }
             };
 
-            output[i * 2] += l;
-            output[i * 2 + 1] += r;
+            output[i * 2] += l * self.volume * (1.0 - self.pan.max(0.0));
+            output[i * 2 + 1] += r * self.volume * (1.0 + self.pan.min(0.0));
             self.frame_pos += speed;
         }
     }
@@ -236,6 +251,13 @@ impl Mixer {
     pub fn trigger(&mut self, slot: usize, speed: f32) {
         if let Some(v) = self.voices.get_mut(slot).and_then(|v| v.as_mut()) {
             v.trigger(speed);
+        }
+    }
+
+    /// Re-trigger voice in `slot` with FX-overridden volume and pan.
+    pub fn trigger_with_fx(&mut self, slot: usize, speed: f32, volume: f32, pan: f32) {
+        if let Some(v) = self.voices.get_mut(slot).and_then(|v| v.as_mut()) {
+            v.trigger_with_fx(speed, volume, pan);
         }
     }
 
@@ -283,12 +305,14 @@ impl Default for Mixer {
 
 /// One step boundary event returned by `Sequencer::advance`.
 ///
-/// `notes` contains `(track_index, playback_speed)` pairs for every track
-/// that has a non-empty step at this boundary.  Empty if all tracks are silent.
+/// `notes` contains `(track_index, playback_speed, fx_slots)` tuples for every
+/// track that has a non-empty step at this boundary.  `fx_slots` is the raw FX
+/// array from the step so the caller can apply VOL/PAN/PIT/RET without
+/// needing a separate lookup.  Empty if all tracks are silent.
 #[derive(Debug, Clone)]
 pub struct StepEvent {
     pub step_index: u8,
-    pub notes: Vec<(usize, f32)>,
+    pub notes: Vec<(usize, f32, [FxSlot; FX_SLOTS_PER_STEP])>,
 }
 
 // ── TrackState ────────────────────────────────────────────────────────────────
@@ -437,6 +461,38 @@ impl Sequencer {
         })
     }
 
+    /// Return the FX slots for `track` at `step_idx`, or a default (all-zero) array
+    /// if the track has no note at this step.
+    fn resolve_track_fx(&self, track: usize, step_idx: u8) -> [FxSlot; FX_SLOTS_PER_STEP] {
+        if self.arrangement.is_empty() {
+            if track != 0 {
+                return Default::default();
+            }
+            return self
+                .phrase
+                .as_ref()
+                .map(|p| p.steps[step_idx as usize].fx.clone())
+                .unwrap_or_default();
+        }
+        let ts = &self.track_states[track];
+        let chain_idx = match self.arrangement.get(ts.song_row).and_then(|r| r[track]) {
+            Some(ci) => ci,
+            None => return Default::default(),
+        };
+        let chain = match self.chains.get(chain_idx as usize) {
+            Some(c) => c,
+            None => return Default::default(),
+        };
+        let slot = match chain.slots.get(ts.chain_slot) {
+            Some(s) => s,
+            None => return Default::default(),
+        };
+        match self.phrases_data.get(slot.phrase as usize) {
+            Some(p) => p.steps[step_idx as usize].fx.clone(),
+            None => Default::default(),
+        }
+    }
+
     /// Advance all track states when a phrase boundary is crossed (step 15 → 0).
     fn advance_track_states(&mut self) {
         if self.arrangement.is_empty() {
@@ -522,8 +578,11 @@ impl Sequencer {
                 }
 
                 let si = self.step_index;
-                let notes: Vec<(usize, f32)> = (0..TRACKS)
-                    .filter_map(|t| self.resolve_track_speed(t, si).map(|s| (t, s)))
+                let notes: Vec<(usize, f32, [FxSlot; FX_SLOTS_PER_STEP])> = (0..TRACKS)
+                    .filter_map(|t| {
+                        self.resolve_track_speed(t, si)
+                            .map(|s| (t, s, self.resolve_track_fx(t, si)))
+                    })
                     .collect();
                 events.push(StepEvent { step_index: si, notes });
             } else {
@@ -888,5 +947,136 @@ mod tests {
 
         let rms: f32 = out2.iter().map(|s| s * s).sum::<f32>() / out2.len() as f32;
         assert!(rms > 0.0, "Voice after interp mode change should still produce output");
+    }
+
+    // ── FX slot tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn fx_command_round_trip_id() {
+        use crate::model::FxCommand;
+        for (cmd, expected_id) in [
+            (FxCommand::Vol, 1u8),
+            (FxCommand::Pan, 2),
+            (FxCommand::Pit, 3),
+            (FxCommand::Ret, 4),
+        ] {
+            assert_eq!(cmd.id(), expected_id);
+            assert_eq!(FxCommand::from_id(expected_id), Some(cmd));
+        }
+        assert_eq!(FxCommand::from_id(0), None);
+        assert_eq!(FxCommand::from_id(255), None);
+    }
+
+    #[test]
+    fn fx_command_round_trip_code() {
+        use crate::model::FxCommand;
+        for code in ["VOL", "PAN", "PIT", "RET"] {
+            let cmd = FxCommand::from_code(code).expect("known code must parse");
+            assert_eq!(cmd.to_code(), code);
+        }
+        assert_eq!(FxCommand::from_code("XYZ"), None);
+        assert!(FxCommand::from_code("vol").is_some(), "should be case-insensitive");
+    }
+
+    #[test]
+    fn voice_vol_fx_scales_output() {
+        let buf = sine_buffer(1024);
+        let mut voice_full = Voice::new(buf.clone(), 1);
+        let mut voice_half = Voice::new(buf, 1);
+
+        voice_full.trigger_with_fx(1.0, 1.0, 0.0);
+        voice_half.trigger_with_fx(1.0, 0.5, 0.0);
+
+        let mut out_full = vec![0.0f32; 512 * 2];
+        let mut out_half = vec![0.0f32; 512 * 2];
+        voice_full.render(&mut out_full);
+        voice_half.render(&mut out_half);
+
+        let rms_full: f32 =
+            (out_full.iter().map(|s| s * s).sum::<f32>() / out_full.len() as f32).sqrt();
+        let rms_half: f32 =
+            (out_half.iter().map(|s| s * s).sum::<f32>() / out_half.len() as f32).sqrt();
+        let ratio = rms_half / rms_full;
+        assert!(
+            (ratio - 0.5).abs() < 0.01,
+            "half-volume should give ~0.5× RMS, got ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn voice_pan_left_silences_right_channel() {
+        let buf = sine_buffer(1024);
+        let mut voice = Voice::new(buf, 1);
+        voice.trigger_with_fx(1.0, 1.0, -1.0); // full left
+
+        let mut out = vec![0.0f32; 512 * 2];
+        voice.render(&mut out);
+
+        let right_rms: f32 = out.iter().skip(1).step_by(2).map(|s| s * s).sum::<f32>()
+            / (out.len() / 2) as f32;
+        assert!(
+            right_rms < 1e-6,
+            "full-left pan should silence right channel, got rms={right_rms}"
+        );
+    }
+
+    #[test]
+    fn voice_pan_right_silences_left_channel() {
+        let buf = sine_buffer(1024);
+        let mut voice = Voice::new(buf, 1);
+        voice.trigger_with_fx(1.0, 1.0, 1.0); // full right
+
+        let mut out = vec![0.0f32; 512 * 2];
+        voice.render(&mut out);
+
+        let left_rms: f32 = out.iter().step_by(2).map(|s| s * s).sum::<f32>()
+            / (out.len() / 2) as f32;
+        assert!(
+            left_rms < 1e-6,
+            "full-right pan should silence left channel, got rms={left_rms}"
+        );
+    }
+
+    #[test]
+    fn sequencer_fx_slots_included_in_step_event() {
+        use crate::model::{FxSlot, Phrase};
+
+        let mut seq = Sequencer::new(48000.0, 120.0);
+        let mut phrase = Phrase::default();
+        phrase.steps[1].note = Some(60);
+        phrase.steps[1].fx[0] = FxSlot { command: 1, value: 128 }; // VOL=128
+        seq.set_phrase(Box::new(phrase));
+        seq.sample_root = 60;
+        seq.restart();
+
+        // Advance to step 1 (6000 frames at 120 BPM / 48 kHz).
+        let events = seq.advance(6000);
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(ev.step_index, 1);
+        assert_eq!(ev.notes.len(), 1);
+        let (track, _speed, fx) = &ev.notes[0];
+        assert_eq!(*track, 0);
+        assert_eq!(fx[0].command, 1, "FX command should be preserved");
+        assert_eq!(fx[0].value, 128, "FX value should be preserved");
+    }
+
+    #[test]
+    fn sequencer_empty_fx_slots_are_zeroed() {
+        use crate::model::Phrase;
+
+        let mut seq = Sequencer::new(48000.0, 120.0);
+        let mut phrase = Phrase::default();
+        phrase.steps[1].note = Some(60); // no FX
+        seq.set_phrase(Box::new(phrase));
+        seq.sample_root = 60;
+        seq.restart();
+
+        let events = seq.advance(6000);
+        let (_, _, fx) = &events[0].notes[0];
+        for slot in fx.iter() {
+            assert_eq!(slot.command, 0, "empty FX slot command should be 0");
+            assert_eq!(slot.value, 0, "empty FX slot value should be 0");
+        }
     }
 }
