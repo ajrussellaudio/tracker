@@ -14,3 +14,9 @@ Summary: Defined full in-memory data model (Song, Chain, Phrase, Step, FxSlot, I
 
 
 ## Iteration 4 — Sat 21 Mar 2026 03:04:09 GMT
+
+## Issue #5 — Minimal phrase editor with live note preview
+Status: done
+Branch: ralph/issue-5
+PR: #18
+Summary: Added tracker-core::audio module with pitch-shifting Voice/Mixer (linear interp, fractional frame_pos). Phrase view renders a 16-row grid with note/instrument/FX columns. Normal/Insert/Command modes; QWERTY piano layout enters notes with live NoteOn at 2^(Δsemi/12) speed ratio. hjkl nav, yy/p copy-paste, d/Delete clear. 28 tests pass.
