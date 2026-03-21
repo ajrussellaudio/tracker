@@ -1,0 +1,46 @@
+# tracker theme configuration
+# Place this file at ~/.config/tracker/theme.toml to apply a custom color theme.
+#
+# All values are hex color strings in #RRGGBB format.
+# On terminals without true-color support (COLORTERM != truecolor/24bit),
+# each color is automatically mapped to the nearest ANSI-256 palette entry.
+#
+# If this file is absent, all colors inherit from the terminal's own defaults.
+# If a key is omitted, that color inherits from the terminal default.
+# Malformed hex values emit a startup warning and fall back to the terminal default.
+
+# ── Cursor ────────────────────────────────────────────────────────────────────
+# Background and foreground of the active cursor cell.
+cursor_bg = "#FF8C00"
+cursor_fg = "#000000"
+
+# ── Phrase editor step columns ────────────────────────────────────────────────
+# Filled note cells (e.g. "C-4").
+step_note = "#00FF87"
+
+# Filled instrument cells (e.g. "01").
+step_instrument = "#87FF00"
+
+# Filled FX command cells (e.g. "VOL").
+step_fx_cmd = "#FF87FF"
+
+# Filled FX value cells (e.g. "064").
+step_fx_val = "#FFD700"
+
+# Empty / unfilled step cells ("---" or "--").
+step_empty = "#555555"
+
+# ── Track / chain colours ─────────────────────────────────────────────────────
+# Filled chain/phrase slots in the song and chain views.
+active_track = "#00FF87"
+
+# Empty slots and inactive column headers.
+inactive_track = "#555555"
+
+# ── Status bar ────────────────────────────────────────────────────────────────
+status_bar_bg = "#333333"
+status_bar_fg = "#FFFFFF"
+
+# ── Screen borders and titles ─────────────────────────────────────────────────
+# Block borders, header rows, and screen titles.
+screen_title = "#00BFFF"
