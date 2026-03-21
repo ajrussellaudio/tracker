@@ -11,3 +11,11 @@ Status: done
 Branch: ralph/issue-2
 PR: #15
 Summary: Created Cargo workspace with tracker-core (lib) and tracker (bin) crates. Implemented ratatui+crossterm TUI shell, cpal silence stream at 48kHz/f32 stereo, clean exit on q, and GitHub Actions CI.
+
+## Iteration 2 — Sat 21 Mar 2026 02:51:23 GMT
+
+## Issue #3 — WAV sample playback on keypress
+Status: done
+Branch: ralph/issue-3
+PR: #16
+Summary: Added tracker-core::audio module (Voice, Mixer, Command). Binary accepts --sample <path>, decodes WAV via hound, sends NoteOn/NoteOff over an rtrb lock-free ring buffer to the audio callback, and shows a ▶ PLAYING / ■ STOPPED indicator in the TUI. Three unit tests all pass.
