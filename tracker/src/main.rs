@@ -7,6 +7,8 @@ use crossterm::{
 };
 mod history;
 use history::History;
+mod theme;
+use theme::Theme;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -199,6 +201,8 @@ struct App {
     history: History,
     /// When set, status bar shows app.status until this instant (timed messages).
     status_timer: Option<std::time::Instant>,
+    /// Loaded color theme.
+    theme: Theme,
 }
 
 impl App {
@@ -245,6 +249,7 @@ impl App {
             render_progress: Arc::new(AtomicU32::new(0)),
             history: History::new(),
             status_timer: None,
+            theme: theme::load(),
         }
     }
 
@@ -975,6 +980,7 @@ fn render_phrase_grid(
     cursor_step: usize,
     cursor_col: usize,
     phrase_idx: usize,
+    theme: &Theme,
 ) -> Table<'static> {
     let rows: Vec<Row> = phrase
         .steps
@@ -1002,30 +1008,37 @@ fn render_phrase_grid(
             };
 
             let cursor_cell_style =
-                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD);
-
-            // Helper: return cursor_cell_style when this column is active, otherwise row_style.
-            let cell_style = |col: usize| {
-                if is_cursor_row && col == cursor_col {
-                    cursor_cell_style
-                } else {
-                    row_style
-                }
-            };
+                Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg).add_modifier(Modifier::BOLD);
 
             let note_style = if is_cursor_row && cursor_col == COL_NOTE {
                 cursor_cell_style
             } else if step.note.is_some() {
                 if is_cursor_row {
-                    Style::default().bg(Color::DarkGray).fg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default().bg(Color::DarkGray).fg(theme.step_note).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(theme.step_note)
                 }
             } else {
                 if is_cursor_row {
                     row_style
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(theme.step_empty)
+                }
+            };
+
+            let instr_style = if is_cursor_row && cursor_col == COL_INS {
+                cursor_cell_style
+            } else if step.instrument.is_some() {
+                if is_cursor_row {
+                    Style::default().bg(Color::DarkGray).fg(theme.step_instrument).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.step_instrument)
+                }
+            } else {
+                if is_cursor_row {
+                    row_style
+                } else {
+                    Style::default().fg(theme.step_empty)
                 }
             };
 
@@ -1033,7 +1046,7 @@ fn render_phrase_grid(
             let mut cells = vec![
                 Cell::from(format!("{i:02}")).style(row_style),
                 Cell::from(note_str).style(note_style),
-                Cell::from(instr_str).style(cell_style(COL_INS)),
+                Cell::from(instr_str).style(instr_style),
             ];
 
             for slot_idx in 0..4 {
@@ -1058,30 +1071,30 @@ fn render_phrase_grid(
                     cursor_cell_style
                 } else if fx.command != 0 {
                     if is_cursor_row {
-                        Style::default().bg(Color::DarkGray).fg(Color::Magenta).add_modifier(Modifier::BOLD)
+                        Style::default().bg(Color::DarkGray).fg(theme.step_fx_cmd).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::Magenta)
+                        Style::default().fg(theme.step_fx_cmd)
                     }
                 } else {
                     if is_cursor_row {
                         row_style
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(theme.step_empty)
                     }
                 };
                 let val_style = if is_cursor_row && cursor_col == val_col {
                     cursor_cell_style
                 } else if fx.command != 0 {
                     if is_cursor_row {
-                        Style::default().bg(Color::DarkGray).fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        Style::default().bg(Color::DarkGray).fg(theme.step_fx_val).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(theme.step_fx_val)
                     }
                 } else {
                     if is_cursor_row {
                         row_style
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(theme.step_empty)
                     }
                 };
 
@@ -1111,13 +1124,13 @@ fn render_phrase_grid(
     )
     .header(
         Row::new(vec!["#", "NOTE", "INS", "FX1C", "FX1V", "FX2C", "FX2V", "FX3C", "FX3V", "FX4C", "FX4V"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            .style(Style::default().fg(theme.screen_title).add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
             .title(format!("Phrase {:02X}", phrase_idx))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(theme.screen_title)),
     )
 }
 
@@ -1127,7 +1140,7 @@ fn render_song_view(app: &App) -> Table<'static> {
     let header_cells: Vec<Cell> = std::iter::once(Cell::from(" "))
         .chain((0..TRACKS).map(|t| {
             Cell::from(format!("TRK{t}")).style(
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().fg(app.theme.screen_title).add_modifier(Modifier::BOLD),
             )
         }))
         .collect();
@@ -1152,11 +1165,11 @@ fn render_song_view(app: &App) -> Table<'static> {
                     let text = chain_opt.map(|c| format!("{c:02X}")).unwrap_or_else(|| "--".to_string());
                     let is_cursor = row_idx == app.song_cursor_row && track == app.song_cursor_track;
                     Cell::from(text).style(if is_cursor {
-                        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                        Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg).add_modifier(Modifier::BOLD)
                     } else if chain_opt.is_some() {
-                        Style::default().fg(Color::Green)
+                        Style::default().fg(app.theme.active_track)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(app.theme.inactive_track)
                     })
                 }))
                 .collect();
@@ -1177,7 +1190,7 @@ fn render_song_view(app: &App) -> Table<'static> {
                     app.song.chains.len()
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(app.theme.screen_title)),
         )
 }
 
@@ -1211,9 +1224,9 @@ fn render_chain_view(app: &App) -> Table<'static> {
                 Style::default().fg(Color::Gray)
             };
             let phrase_style = if is_cursor {
-                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Green)
+                Style::default().fg(app.theme.active_track)
             };
             Row::new(vec![
                 Cell::from(format!("{i:02}")).style(row_style),
@@ -1226,8 +1239,8 @@ fn render_chain_view(app: &App) -> Table<'static> {
     let display_rows = if rows.is_empty() {
         vec![Row::new(vec![
             Cell::from("--"),
-            Cell::from("--").style(Style::default().fg(Color::DarkGray)),
-            Cell::from("--").style(Style::default().fg(Color::DarkGray)),
+            Cell::from("--").style(Style::default().fg(app.theme.inactive_track)),
+            Cell::from("--").style(Style::default().fg(app.theme.inactive_track)),
         ])]
     } else {
         rows
@@ -1245,13 +1258,13 @@ fn render_chain_view(app: &App) -> Table<'static> {
     )
     .header(
         Row::new(vec!["#", "PHR", "TRANS"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            .style(Style::default().fg(app.theme.screen_title).add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
             .title(chain_title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(app.theme.screen_title)),
     )
 }
 
@@ -1323,7 +1336,7 @@ fn render_instrument_editor(app: &App) -> Paragraph<'static> {
 
         let cursor_mark = if i == app.instr_cursor { "▶ " } else { "  " };
         let row_style = if i == app.instr_cursor {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -1342,14 +1355,14 @@ fn render_instrument_editor(app: &App) -> Paragraph<'static> {
             app.song.instruments.len(),
             MAX_INSTRUMENTS
         ),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(app.theme.inactive_track),
     ));
 
     Paragraph::new(lines).block(
         Block::default()
             .title(format!("Instrument {:02}", app.active_instrument))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(app.theme.screen_title)),
     )
 }
 
@@ -1359,7 +1372,7 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
     let lines: Vec<ratatui::text::Line> = if app.browser_entries.is_empty() {
         vec![ratatui::text::Line::styled(
             "  (no .wav files found in current directory)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.inactive_track),
         )]
     } else {
         app.browser_entries
@@ -1367,7 +1380,7 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
             .enumerate()
             .map(|(i, name)| {
                 let (prefix, style) = if i == app.browser_cursor {
-                    ("▶ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
                 } else {
                     ("  ", Style::default().fg(Color::White))
                 };
@@ -1380,7 +1393,7 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
         Block::default()
             .title("Sample Browser  [Enter: select  Esc: cancel]")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(app.theme.screen_title)),
     )
 }
 
@@ -1398,7 +1411,7 @@ fn render_mixer_view(app: &App) -> Table<'static> {
     let header = Row::new(
         std::iter::once(Cell::from("    ")).chain(
             (0..TRACKS).map(|t| {
-                Cell::from(format!("TRK{t}")).style(Style::default().fg(Color::DarkGray))
+                Cell::from(format!("TRK{t}")).style(Style::default().fg(app.theme.inactive_track))
             }),
         ),
     );
@@ -1408,7 +1421,7 @@ fn render_mixer_view(app: &App) -> Table<'static> {
         .enumerate()
         .map(|(field_idx, label)| {
             let cells: Vec<Cell> = std::iter::once(
-                Cell::from(*label).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(*label).style(Style::default().fg(app.theme.inactive_track)),
             )
             .chain((0..TRACKS).map(|t| {
                 let m = &app.song.mixer[t];
@@ -1425,7 +1438,7 @@ fn render_mixer_view(app: &App) -> Table<'static> {
                 };
 
                 let style = if is_cursor {
-                    Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                    Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg).add_modifier(Modifier::BOLD)
                 } else if field_idx == MIXER_FIELD_MUTE && m.mute {
                     Style::default().fg(Color::Red)
                 } else if field_idx == MIXER_FIELD_SOLO && m.solo {
@@ -1452,7 +1465,7 @@ fn render_mixer_view(app: &App) -> Table<'static> {
             Block::default()
                 .title("MIXER  [F2: close  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo]")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(app.theme.screen_title)),
         )
 }
 
@@ -1559,7 +1572,7 @@ fn run_tui(
                 }
                 View::PhraseEditor => {
                     let phrase = app.phrase();
-                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx);
+                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx, &app.theme);
                     frame.render_widget(table, outer[0]);
                 }
                 View::InstrumentEditor => {
@@ -1649,7 +1662,7 @@ fn run_tui(
                 }
             }};
             let status = Paragraph::new(status_text)
-                .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+                .style(Style::default().fg(app.theme.status_bar_fg).bg(app.theme.status_bar_bg));
             frame.render_widget(status, outer[1]);
         })?;
 
