@@ -279,7 +279,7 @@ Per-track volume, pan, mute, solo, and FX send for all 8 tracks.
 
 ### Transport Controls
 
-Available globally from Song View, Phrase Editor (Normal), and Mixer View.
+Available from Song View and Phrase Editor (Normal Mode).
 
 | Key | Action |
 |-----|--------|
