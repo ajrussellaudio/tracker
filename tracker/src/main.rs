@@ -339,10 +339,16 @@ impl App {
         if let Some(instr) = self.song.instruments.get(idx) {
             if let Some(sample) = &instr.sample {
                 let path = sample.path.clone();
+                let embedded_bytes = sample.bytes.clone();
                 let loop_start = instr.loop_start.unwrap_or(0);
                 let loop_end = instr.loop_end.unwrap_or(0);
                 let interp_mode = instr.interp_mode.clone();
-                match load_wav(&path) {
+                let load_result = if let Some(bytes) = embedded_bytes {
+                    load_wav_from_bytes(&bytes)
+                } else {
+                    load_wav(&path)
+                };
+                match load_result {
                     Ok((buf, channels)) => {
                         self.send_cmd(Command::LoadVoice {
                             slot: 0,
@@ -371,10 +377,16 @@ impl App {
         let instr = &self.song.instruments[0];
         if let Some(sample) = &instr.sample {
             let path = sample.path.clone();
+            let embedded_bytes = sample.bytes.clone();
             let loop_start = instr.loop_start.unwrap_or(0);
             let loop_end = instr.loop_end.unwrap_or(0);
             let interp_mode = instr.interp_mode.clone();
-            match load_wav(&path) {
+            let load_result = if let Some(bytes) = embedded_bytes {
+                load_wav_from_bytes(&bytes)
+            } else {
+                load_wav(&path)
+            };
+            match load_result {
                 Ok((buf, channels)) => {
                     self.send_cmd(Command::LoadVoice {
                         slot: 0,
@@ -502,6 +514,22 @@ impl App {
             let path = path.trim();
             match storage::export_json(&self.song, path) {
                 Ok(_) => self.status = format!("JSON exported: {path}"),
+                Err(e) => self.status = format!("Error: {e}"),
+            }
+        } else if let Some(path) = raw.strip_prefix("export-packed ") {
+            let path = path.trim().to_string();
+            self.status = format!("Packing samples…");
+            match storage::save_packed_trk(&self.song, &path) {
+                Ok(failed) if failed.is_empty() => {
+                    self.status = format!("Packed: {path}");
+                }
+                Ok(failed) => {
+                    self.status = format!(
+                        "Packed: {path} ({} sample(s) missing: {})",
+                        failed.len(),
+                        failed.join(", ")
+                    );
+                }
                 Err(e) => self.status = format!("Error: {e}"),
             }
         } else if let Some(path) = raw.strip_prefix("export-mix ") {
@@ -679,10 +707,13 @@ fn load_all_instrument_samples(
     song.instruments
         .iter()
         .map(|instr| {
-            instr
-                .sample
-                .as_ref()
-                .and_then(|s| load_wav(&s.path).ok())
+            instr.sample.as_ref().and_then(|s| {
+                if let Some(bytes) = &s.bytes {
+                    load_wav_from_bytes(bytes).ok()
+                } else {
+                    load_wav(&s.path).ok()
+                }
+            })
         })
         .collect()
 }
@@ -690,6 +721,19 @@ fn load_all_instrument_samples(
 fn load_wav(path: &str) -> Result<(Arc<Vec<f32>>, usize)> {
     let mut reader =
         hound::WavReader::open(path).with_context(|| format!("failed to open WAV: {path}"))?;
+    decode_wav_reader(&mut reader)
+}
+
+fn load_wav_from_bytes(bytes: &[u8]) -> Result<(Arc<Vec<f32>>, usize)> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut reader =
+        hound::WavReader::new(cursor).context("failed to parse embedded WAV bytes")?;
+    decode_wav_reader(&mut reader)
+}
+
+fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
+    reader: &mut hound::WavReader<R>,
+) -> Result<(Arc<Vec<f32>>, usize)> {
     let spec = reader.spec();
     let channels = spec.channels as usize;
     let samples: Vec<f32> = match spec.sample_format {
