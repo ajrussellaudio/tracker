@@ -57,3 +57,7 @@ Summary: Added SongView (8-col × N-row arrangement grid) and ChainView (phrase 
 ## Iteration 4 — Sat 21 Mar 2026 10:17:28 GMT
 
 ## Iteration 5 — Sat 21 Mar 2026 10:25:07 GMT
+
+## Iteration 6 — Sat 21 Mar 2026 11:38:21 UTC
+
+PR #27 review round 1: found one genuine issue — README Transport Controls section incorrectly lists Mixer View as supporting ←/→ BPM adjustment (those keys navigate tracks in Mixer View). Posted REQUEST_CHANGES. Next iteration enters Fix Mode.
