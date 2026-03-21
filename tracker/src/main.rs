@@ -88,12 +88,23 @@ fn pitch_speed(note: u8, root_note: u8) -> f32 {
 
 /// Top-level view the TUI is showing.
 enum View {
+    /// Startup screen shown when no project path is given on the CLI.
+    Startup,
     SongView,
     ChainView,
     PhraseEditor,
     InstrumentEditor,
     SampleBrowser,
     Mixer,
+}
+
+/// What the file browser is selecting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserMode {
+    /// Browse `.wav` files for an instrument sample slot.
+    Sample,
+    /// Browse `.trk` project files to open.
+    Project,
 }
 
 enum InputMode {
@@ -194,6 +205,10 @@ struct App {
     browser_cursor: usize,
     /// Sample browser: current directory being listed.
     browser_dir: PathBuf,
+    /// What the browser is selecting (sample or project file).
+    browser_mode: BrowserMode,
+    /// Startup screen: cursor (0 = New Project, 1 = Open File).
+    startup_cursor: usize,
     /// Index of the phrase currently being edited.
     active_phrase_idx: usize,
     /// Navigation stack for Esc/Backspace pop-back.
@@ -259,6 +274,8 @@ impl App {
             browser_entries: Vec::new(),
             browser_cursor: 0,
             browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            browser_mode: BrowserMode::Sample,
+            startup_cursor: 0,
             active_phrase_idx: 0,
             view_stack: Vec::new(),
             song_cursor_row: 0,
@@ -456,7 +473,18 @@ impl App {
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
             });
         self.browser_dir = start_dir;
+        self.browser_mode = BrowserMode::Sample;
         self.browser_entries = list_browser_entries(&self.browser_dir);
+        self.browser_cursor = 0;
+        self.push_view(View::SampleBrowser);
+    }
+
+    /// Open the file browser scoped to `.trk` project files.
+    fn open_project_browser(&mut self) {
+        let start_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.browser_dir = start_dir;
+        self.browser_mode = BrowserMode::Project;
+        self.browser_entries = list_browser_entries_ext(&self.browser_dir, "trk");
         self.browser_cursor = 0;
         self.push_view(View::SampleBrowser);
     }
@@ -468,24 +496,61 @@ impl App {
             match entry {
                 BrowserEntry::Dir(name) => {
                     self.browser_dir = self.browser_dir.join(&name);
-                    self.browser_entries = list_browser_entries(&self.browser_dir);
+                    let ext = match self.browser_mode {
+                        BrowserMode::Sample => "wav",
+                        BrowserMode::Project => "trk",
+                    };
+                    self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
                     self.browser_cursor = 0;
                 }
-                BrowserEntry::Wav(name) => {
-                    let full_path = self.browser_dir.join(&name);
-                    let path_str = full_path
-                        .canonicalize()
-                        .unwrap_or(full_path)
-                        .to_string_lossy()
-                        .to_string();
-                    self.record("select sample");
-                    self.ensure_instrument(self.active_instrument);
-                    if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
-                        instr.sample = Some(tracker_core::model::Sample::from_path(path_str));
+                BrowserEntry::Wav(name) => match self.browser_mode {
+                    BrowserMode::Sample => {
+                        let full_path = self.browser_dir.join(&name);
+                        let path_str = full_path
+                            .canonicalize()
+                            .unwrap_or(full_path)
+                            .to_string_lossy()
+                            .to_string();
+                        self.record("select sample");
+                        self.ensure_instrument(self.active_instrument);
+                        if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
+                            instr.sample = Some(tracker_core::model::Sample::from_path(path_str));
+                        }
+                        self.pop_view();
+                        self.reload_instrument_sample();
                     }
-                    self.pop_view();
-                    self.reload_instrument_sample();
-                }
+                    BrowserMode::Project => {
+                        let full_path = self.browser_dir.join(&name);
+                        let path_str = full_path
+                            .canonicalize()
+                            .unwrap_or(full_path)
+                            .to_string_lossy()
+                            .to_string();
+                        match storage::load_trk(&path_str) {
+                            Ok(song) => {
+                                self.song = tracker_core::model::migrate(song);
+                                if self.song.phrases.is_empty() {
+                                    self.song
+                                        .phrases
+                                        .push(tracker_core::model::Phrase::default());
+                                }
+                                self.sync_phrase_to_sequencer();
+                                self.reload_instruments();
+                                self.sync_song_to_sequencer();
+                                self.sync_mixer_to_audio();
+                                self.history.clear();
+                                // Clear nav stack and go straight to Song View.
+                                self.view_stack.clear();
+                                self.view = View::SongView;
+                                self.browser_mode = BrowserMode::Sample;
+                                self.set_timed_status(format!("Loaded: {path_str}"));
+                            }
+                            Err(e) => {
+                                self.set_timed_status(format!("Error: {e}"));
+                            }
+                        }
+                    }
+                },
             }
         }
     }
@@ -494,7 +559,11 @@ impl App {
     fn browser_go_up(&mut self) {
         if let Some(parent) = self.browser_dir.parent().map(|p| p.to_path_buf()) {
             self.browser_dir = parent;
-            self.browser_entries = list_browser_entries(&self.browser_dir);
+            let ext = match self.browser_mode {
+                BrowserMode::Sample => "wav",
+                BrowserMode::Project => "trk",
+            };
+            self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
             self.browser_cursor = 0;
         }
     }
@@ -837,6 +906,12 @@ fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
 /// List subdirectories and `.wav` files in `dir`, sorted alphabetically (case-insensitive).
 /// All other file types are excluded.
 fn list_browser_entries(dir: &std::path::Path) -> Vec<BrowserEntry> {
+    list_browser_entries_ext(dir, "wav")
+}
+
+/// List subdirectories and files matching `file_ext` in `dir`, sorted alphabetically
+/// (case-insensitive).  All other file types are excluded.
+fn list_browser_entries_ext(dir: &std::path::Path, file_ext: &str) -> Vec<BrowserEntry> {
     let mut entries = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
@@ -845,7 +920,7 @@ fn list_browser_entries(dir: &std::path::Path) -> Vec<BrowserEntry> {
             if path.is_dir() {
                 entries.push(BrowserEntry::Dir(name));
             } else if let Some(ext) = path.extension() {
-                if ext.to_ascii_lowercase() == "wav" {
+                if ext.to_ascii_lowercase() == file_ext {
                     entries.push(BrowserEntry::Wav(name));
                 }
             }
@@ -1455,6 +1530,34 @@ fn render_instrument_editor(app: &App) -> Paragraph<'static> {
     )
 }
 
+// ── Startup screen render ─────────────────────────────────────────────────────
+
+fn render_startup_screen(app: &App) -> Paragraph<'static> {
+    let items = ["New Project", "Open File"];
+    let mut lines = vec![
+        ratatui::text::Line::from(""),
+        ratatui::text::Line::styled(
+            "  Welcome to tracker",
+            Style::default().fg(app.theme.screen_title).add_modifier(Modifier::BOLD),
+        ),
+        ratatui::text::Line::from(""),
+    ];
+    for (i, label) in items.iter().enumerate() {
+        let (prefix, style) = if i == app.startup_cursor {
+            ("  ▶  ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
+        } else {
+            ("     ", Style::default().fg(Color::White))
+        };
+        lines.push(ratatui::text::Line::styled(format!("{prefix}{label}"), style));
+    }
+    Paragraph::new(lines).block(
+        Block::default()
+            .title("tracker  [j/k: navigate  Enter: select  q: quit]")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(app.theme.screen_title)),
+    )
+}
+
 // ── Sample browser render ─────────────────────────────────────────────────────
 
 fn render_sample_browser(app: &App) -> Paragraph<'static> {
@@ -1490,7 +1593,10 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
 
     Paragraph::new(lines).block(
         Block::default()
-            .title("Sample Browser  [Enter: select  -/Backspace: up  Esc: cancel]")
+            .title(match app.browser_mode {
+                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  Esc: cancel]",
+                BrowserMode::Project => "Open Project  [Enter: select  -/Backspace: up  Esc: cancel]",
+            })
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.screen_title)),
     )
@@ -1630,6 +1736,7 @@ fn run_tui(
     sample_root: u8,
     seq_playing: Arc<AtomicBool>,
     current_seq_step: Arc<AtomicU8>,
+    action: CliAction,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1638,6 +1745,33 @@ fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(producer, sample_root, seq_playing, current_seq_step);
+
+    match action {
+        CliAction::ShowStartup => {
+            app.view = View::Startup;
+        }
+        CliAction::OpenFile(path) => {
+            let path_str = path.to_string_lossy().to_string();
+            match storage::load_trk(&path_str) {
+                Ok(song) => {
+                    app.song = tracker_core::model::migrate(song);
+                    if app.song.phrases.is_empty() {
+                        app.song.phrases.push(tracker_core::model::Phrase::default());
+                    }
+                    app.sync_phrase_to_sequencer();
+                    app.reload_instruments();
+                    app.sync_song_to_sequencer();
+                    app.sync_mixer_to_audio();
+                    app.set_timed_status(format!("Loaded: {path_str}"));
+                }
+                Err(e) => {
+                    eprintln!("error: could not open '{path_str}': {e}");
+                    disable_raw_mode()?;
+                    return Err(e);
+                }
+            }
+        }
+    }
 
     loop {
         // Poll render thread for completion/progress before drawing.
@@ -1661,6 +1795,10 @@ fn run_tui(
 
             // Main area — depends on active view
             match app.view {
+                View::Startup => {
+                    let para = render_startup_screen(&app);
+                    frame.render_widget(para, outer[0]);
+                }
                 View::SongView => {
                     let table = render_song_view(&app);
                     frame.render_widget(table, outer[0]);
@@ -1720,6 +1858,7 @@ fn run_tui(
                 format!("{mode_label}  |  {transport}  |  {}", app.status)
             } else {
                 match app.view {
+                View::Startup => "j/k: navigate  Enter: select  q: quit".to_string(),
                 View::SongView => format!(
                     "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  q: quit"
                 ),
@@ -1804,6 +1943,30 @@ fn run_tui(
                     }
                 }
                 match app.view {
+                    // ──────────────────────────────────────────────────────────
+                    // Startup screen key handling
+                    // ──────────────────────────────────────────────────────────
+                    View::Startup => match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            app.startup_cursor = (app.startup_cursor + 1) % 2;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            app.startup_cursor = (app.startup_cursor + 1) % 2;
+                        }
+                        KeyCode::Enter => match app.startup_cursor {
+                            0 => {
+                                // New Project — blank song, go to Song View.
+                                app.view = View::SongView;
+                                app.view_stack.clear();
+                            }
+                            _ => {
+                                // Open File — launch project browser.
+                                app.open_project_browser();
+                            }
+                        },
+                        _ => {}
+                    },
                     // ──────────────────────────────────────────────────────────
                     // Song view key handling
                     // ──────────────────────────────────────────────────────────
@@ -2654,13 +2817,51 @@ fn run_tui(
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// The action to take on startup, derived from CLI arguments.
+#[derive(Debug, PartialEq)]
+enum CliAction {
+    /// Show the interactive startup screen (no arguments given).
+    ShowStartup,
+    /// Open the given `.trk` file directly, skipping the startup screen.
+    OpenFile(std::path::PathBuf),
+}
+
+/// Parse command-line arguments into a [`CliAction`].
+///
+/// Returns `Err` for unknown flags (including the removed `--sample`).
+fn parse_args(args: &[String]) -> Result<CliAction> {
+    // Skip argv[0] (program name).
+    let args = match args.first() {
+        // If the first element looks like a program path, skip it.
+        Some(first) if first.contains('/') || first.contains('\\') || !first.ends_with(".trk") => {
+            &args[1..]
+        }
+        _ => args,
+    };
+    if args.is_empty() {
+        return Ok(CliAction::ShowStartup);
+    }
+    for arg in args {
+        if arg.starts_with('-') {
+            if arg == "--sample" {
+                anyhow::bail!(
+                    "`--sample` has been removed.\n\
+                     Launch with `tracker path/to/project.trk` to open a project directly,\n\
+                     or `tracker` with no arguments to show the startup screen."
+                );
+            }
+            anyhow::bail!("Unknown flag: {arg}\nUsage: tracker [path.trk]");
+        }
+    }
+    Ok(CliAction::OpenFile(std::path::PathBuf::from(&args[0])))
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let sample_path = args
-        .iter()
-        .position(|a| a == "--sample")
-        .and_then(|i| args.get(i + 1))
-        .cloned();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let action = parse_args(&raw_args).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     // Lock-free SPSC channel: UI → audio thread.
     let (producer, consumer) = RingBuffer::<Command>::new(64);
@@ -2669,29 +2870,13 @@ fn main() -> Result<()> {
     let seq_playing = Arc::new(AtomicBool::new(false));
     let current_seq_step = Arc::new(AtomicU8::new(0));
 
-    let sample_buf_and_root: Option<(Arc<Vec<f32>>, usize, u8)> =
-        if let Some(ref path) = sample_path {
-            match load_wav(path) {
-                Ok((buf, ch)) => Some((buf, ch, 60)), // default root = C4
-                Err(e) => {
-                    eprintln!("Warning: could not load WAV: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-    let sample_root = sample_buf_and_root.as_ref().map(|t| t.2).unwrap_or(60);
-    let audio_buf = sample_buf_and_root.map(|(buf, ch, _)| (buf, ch));
-
     let initial_bpm = 120.0f32;
 
     let _stream = start_audio_stream(
         consumer,
         Arc::clone(&seq_playing),
         Arc::clone(&current_seq_step),
-        audio_buf,
+        None, // samples are loaded from project instruments, not the CLI
         initial_bpm,
     )
     .unwrap_or_else(|e| {
@@ -2699,7 +2884,7 @@ fn main() -> Result<()> {
         panic!("audio unavailable: {e}")
     });
 
-    run_tui(Some(producer), sample_root, seq_playing, current_seq_step)?;
+    run_tui(Some(producer), 60, seq_playing, current_seq_step, action)?;
     Ok(())
 }
 
@@ -3554,6 +3739,42 @@ mod tests {
             Color::Rgb(0, 95, 135),
             "playback_head_bg must not appear on cursor row when they coincide"
         );
+    }
+
+    #[test]
+    fn parse_args_no_args_shows_startup() {
+        let args: Vec<String> = vec!["tracker".to_string()];
+        assert_eq!(parse_args(&args).unwrap(), CliAction::ShowStartup);
+    }
+
+    #[test]
+    fn parse_args_empty_slice_shows_startup() {
+        let args: Vec<String> = vec![];
+        assert_eq!(parse_args(&args).unwrap(), CliAction::ShowStartup);
+    }
+
+    #[test]
+    fn parse_args_positional_path_gives_open_file() {
+        let args: Vec<String> = vec!["tracker".to_string(), "my-song.trk".to_string()];
+        assert_eq!(
+            parse_args(&args).unwrap(),
+            CliAction::OpenFile(std::path::PathBuf::from("my-song.trk"))
+        );
+    }
+
+    #[test]
+    fn parse_args_removed_sample_flag_gives_error() {
+        let args: Vec<String> =
+            vec!["tracker".to_string(), "--sample".to_string(), "kick.wav".to_string()];
+        assert!(parse_args(&args).is_err(), "--sample should return an error");
+        let err = parse_args(&args).unwrap_err().to_string();
+        assert!(err.contains("--sample"), "error should mention --sample");
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_gives_error() {
+        let args: Vec<String> = vec!["tracker".to_string(), "--unknown".to_string()];
+        assert!(parse_args(&args).is_err(), "unknown flag should return an error");
     }
 }
 
