@@ -4,10 +4,11 @@ Created: initial
 
 (No iterations run yet.)
 
-## Iteration 1 — Sat 21 Mar 2026 02:46:52 GMT
+## Iteration 3 — Sat 21 Mar 2026 02:57:42 GMT
 
-## Issue #2 — Workspace scaffold + TUI shell + silent audio
+## Issue #4 — Core data model + bincode/JSON save/load
 Status: done
-Branch: ralph/issue-2
-PR: #15
-Summary: Created Cargo workspace with tracker-core (lib) and tracker (bin) crates. Implemented ratatui+crossterm TUI shell, cpal silence stream at 48kHz/f32 stereo, clean exit on q, and GitHub Actions CI.
+Branch: ralph/issue-4
+PR: #17
+Summary: Defined full in-memory data model (Song, Chain, Phrase, Step, FxSlot, Instrument, Sample, InterpMode) with serde derives. Added bincode/.trk and JSON persistence via tracker-core::storage. TUI gains colon command mode (:w, :e, :export-json) with error display in status bar. 11 tests pass including bincode and JSON round-trips.
+
