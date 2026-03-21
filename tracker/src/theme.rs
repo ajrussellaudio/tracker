@@ -116,13 +116,9 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     for step in 0u32..24 {
         let v = 8 + step * 10;
         let idx = (232 + step) as u8;
-        let d = ri.saturating_sub(v).max(v.saturating_sub(ri));
-        let dist = d * d * 3; // equal contribution from r, g, b (all equal in gray)
-        // Use actual distance so we compare apples-to-apples
         let dr = ri.saturating_sub(v).max(v.saturating_sub(ri));
         let dg = gi.saturating_sub(v).max(v.saturating_sub(gi));
         let db = bi.saturating_sub(v).max(v.saturating_sub(bi));
-        let _ = dist;
         let dist = dr * dr + dg * dg + db * db;
         if dist < best_dist {
             best_dist = dist;
@@ -273,7 +269,7 @@ mod tests {
     #[test]
     fn non_truecolor_hex_gives_indexed_color() {
         let color = hex_to_color("#FF8C00", "cursor_bg", false);
-        matches!(color, Some(Color::Indexed(_)));
+        assert!(matches!(color, Some(Color::Indexed(_))));
     }
 
     #[test]
