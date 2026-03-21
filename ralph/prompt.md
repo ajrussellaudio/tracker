@@ -126,7 +126,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` comment that needs addr
 5. Run `cargo test` using a sub-agent. Fix any failures.
 6. Commit: `git commit -m "fix: address review comments on PR #<N>"`
 7. Push: `git push origin ralph/issue-<N>`
-8. Stop here. The next iteration will enter Review Mode (round 2).
+8. **Stop. Do not proceed to any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
 
 ---
 
@@ -169,7 +169,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase a
    - If the rebase succeeds and `cargo test` passes: `git push --force-with-lease origin ralph/issue-<M>`
    - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run `cargo test` to verify. If tests pass, continue the rebase and push.
    - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
-4. Stop here. The next iteration will process the next open PR or implement a new issue.
+4. **Stop. Do not proceed to Implement Mode or any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
 
 ---
 
@@ -208,7 +208,7 @@ If the checks passed:
 
 ### Step 6 — Stop
 
-Open a PR and stop. The loop will restart and enter Review Mode next iteration.
+**Stop here. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart and enter Review Mode next iteration.
 
 ---
 
@@ -228,6 +228,7 @@ Open a PR and stop. The loop will restart and enter Review Mode next iteration.
 ## Ground rules
 
 - **One task per iteration.** Implement one issue, OR review one PR, OR fix one PR, OR merge one PR. Never more than one.
+- **`<promise>COMPLETE</promise>` may only be emitted from Step 7.** Never emit it from inside a mode (Implement, Review, Fix, Merge, etc.).
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
 - **Never touch issue #1.** It is the PRD and must remain open.
