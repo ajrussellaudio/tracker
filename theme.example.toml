@@ -41,6 +41,12 @@ inactive_track = "#555555"
 status_bar_bg = "#333333"
 status_bar_fg = "#FFFFFF"
 
+# Status bar background when Insert mode is active (defaults to dark red).
+insert_mode_bg = "#8B0000"
+
+# Status bar background when Keyboard mode is active (defaults to terminal default).
+keyboard_mode_bg = "#005F87"
+
 # ── Screen borders and titles ─────────────────────────────────────────────────
 # Block borders, header rows, and screen titles.
 screen_title = "#00BFFF"
