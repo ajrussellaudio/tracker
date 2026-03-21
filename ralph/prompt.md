@@ -1,6 +1,6 @@
 # Ralph Prompt
 
-You are working autonomously on the **tracker** project — a CLI/TUI sample-based music tracker in Rust.
+Read `ralph/project.md` now for project-specific configuration (repo name, build/test commands, permanent issue number). All references below to "the repo", "the build command", "the test command", and "the permanent issue" refer to values defined there.
 
 ## Step 0 — Sync workspace
 
@@ -15,7 +15,7 @@ Before doing anything else, make sure the workspace is up to date:
 Use sub-agents for the following orientation tasks so you don't burn your primary context window:
 
 - Run `git log --oneline -20` to see recent commits.
-- Use the GitHub MCP tools to list all open issues in `ajrussellaudio/tracker`, excluding issue #1 (the PRD, which stays open permanently).
+- Use the GitHub MCP tools to list all open issues in the repo (see `project.md`), excluding the permanent issue (see `project.md`).
 
 ## Step 2 — Decide what to work on
 
@@ -39,7 +39,7 @@ Choose a mode based on this table:
 
 ### If there are no open ralph PRs
 
-- List all open issues (excluding #1).
+- List all open issues (excluding the permanent issue — see `project.md`).
 - Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one.
 - Proceed to **[Implement Mode](#implement-mode)**.
 - If no open issues remain, proceed to **[Step 7](#step-7--decide-what-comes-next)**.
@@ -54,11 +54,11 @@ You are reviewing PR `#<N>`. Delegate the actual review to a sub-agent — do no
 
 Launch a **general-purpose sub-agent** with this prompt:
 
-> "Review PR #\<N\> in ajrussellaudio/tracker.
+> "Review PR #\<N\> in the repo (see `ralph/project.md` for the repo name).
 > Get the diff with: `gh pr diff <N>`
 > Get the PR description using GitHub MCP tools.
-> Run the test suite: `cargo test`
-> You are a strict Rust code reviewer with no attachment to this code.
+> Run the test suite using the test command from `ralph/project.md`.
+> You are a strict code reviewer with no attachment to this code.
 > Surface only: genuine bugs, logic errors, missing test coverage for new behaviour, or security issues.
 > Do NOT comment on: style, formatting, naming conventions, or speculative concerns.
 > For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
@@ -74,9 +74,9 @@ Do **not** re-review the whole PR. The goal is only to verify the round 1 issues
 
 Launch a **general-purpose sub-agent** with this prompt:
 
-> "You are verifying fixes on PR #\<N\> in ajrussellaudio/tracker.
+> "You are verifying fixes on PR #\<N\> in the repo (see `ralph/project.md` for the repo name).
 > Get the diff with: `gh pr diff <N>`
-> Run the test suite: `cargo test`
+> Run the test suite using the test command from `ralph/project.md`.
 > The previous review raised these specific issues:
 > \<paste the full body of the round 1 REQUEST_CHANGES comment here\>
 > Check only whether each of those issues has been resolved in the latest diff.
@@ -123,7 +123,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` comment that needs addr
 2. Read **every** issue listed — Fix Mode must address **all of them** in one pass, not just some.
 3. Check out the PR branch: `git checkout ralph/issue-<N>`
 4. Implement fixes for every raised issue. Delegate large file reads to sub-agents.
-5. Run `cargo test` using a sub-agent. Fix any failures.
+5. Run the test command (see `ralph/project.md`) using a sub-agent. Fix any failures.
 6. Commit: `git commit -m "fix: address review comments on PR #<N>"`
 7. Push: `git push origin ralph/issue-<N>`
 8. **Stop. Do not proceed to any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
@@ -166,8 +166,8 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase a
      git fetch origin ralph/issue-<M>
      git rebase --onto main <old-tip-sha> ralph/issue-<M>
      ```
-   - If the rebase succeeds and `cargo test` passes: `git push --force-with-lease origin ralph/issue-<M>`
-   - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run `cargo test` to verify. If tests pass, continue the rebase and push.
+   - If the rebase succeeds and the test command (see `ralph/project.md`) passes: `git push --force-with-lease origin ralph/issue-<M>`
+   - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run the test command (see `ralph/project.md`) to verify. If tests pass, continue the rebase and push.
    - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
 4. **Stop. Do not proceed to Implement Mode or any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
 
@@ -184,12 +184,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase a
 
 ### Step 4 — Verify
 
-Run the following checks using a sub-agent. **Both must pass before you continue:**
-
-```bash
-cargo build
-cargo test
-```
+Run the following checks using a sub-agent (use the build and test commands from `ralph/project.md`). **Both must pass before you continue:**
 
 If either check fails and you cannot fix it after a genuine effort, **do not open a PR**. Instead:
 - Revert any broken changes (`git checkout -- .` or `git stash`)
@@ -214,10 +209,10 @@ If the checks passed:
 
 ## Step 7 — Decide what comes next
 
-- List all open issues (excluding #1).
+- List all open issues (excluding the permanent issue — see `project.md`).
 - List all open `ralph/issue-*` PRs.
 
-- **If there are no open issues (excluding #1) AND no open ralph PRs:** emit this token on a line by itself and stop:
+- **If there are no open issues (excluding the permanent issue) AND no open ralph PRs:** emit this token on a line by itself and stop:
 
   <promise>COMPLETE</promise>
 
@@ -231,7 +226,7 @@ If the checks passed:
 - **`<promise>COMPLETE</promise>` may only be emitted from Step 7.** Never emit it from inside a mode (Implement, Review, Fix, Merge, etc.).
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
-- **Never touch issue #1.** It is the PRD and must remain open.
+- **Never touch the permanent issue** (see `project.md`). It is the PRD and must remain open.
 - **Never commit directly to `main`.** Always use a `ralph/issue-<N>` branch.
 - **Always merge with `--merge`, never `--squash`.** Squash breaks the downstream rebase chain.
 
