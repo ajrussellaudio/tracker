@@ -93,3 +93,9 @@ Summary: Added tracker-core::render module with offline render_to_buffer(); :exp
 ## Iteration 5 — Sat 21 Mar 2026 11:28:00 UTC
 
 PR #26 review round 2: found genuine bug (spurious record() call before arrangement clear guard in song view). Posted REQUEST_CHANGES (round 2). PR #26 has now hit the review cap — next iteration will force-approve.
+
+## Iteration 6 — Sat 21 Mar 2026 11:31:52 UTC
+
+## Merged PR #26 — feat: undo/redo stack with snapshot history
+Downstream rebased: (none)
+PR #26 approved after max review rounds.
