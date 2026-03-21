@@ -19,12 +19,15 @@ struct ThemeConfig {
     status_bar_bg: Option<String>,
     status_bar_fg: Option<String>,
     screen_title: Option<String>,
+    insert_mode_bg: Option<String>,
+    keyboard_mode_bg: Option<String>,
 }
 
 // ── Resolved theme ────────────────────────────────────────────────────────────
 
 /// Resolved ratatui colors for all named theme keys.
-/// All fields default to `Color::Reset` (terminal defaults) when no theme is loaded.
+/// All fields default to `Color::Reset` (terminal defaults) when no theme is loaded,
+/// except `insert_mode_bg` which defaults to a dark red danger colour.
 pub struct Theme {
     pub cursor_bg: Color,
     pub cursor_fg: Color,
@@ -38,6 +41,11 @@ pub struct Theme {
     pub status_bar_bg: Color,
     pub status_bar_fg: Color,
     pub screen_title: Color,
+    /// Status bar background when the app is in Insert mode.
+    pub insert_mode_bg: Color,
+    /// Status bar background when the app is in Keyboard mode (wired up by the Keyboard mode issue).
+    #[allow(dead_code)]
+    pub keyboard_mode_bg: Color,
 }
 
 impl Default for Theme {
@@ -55,6 +63,8 @@ impl Default for Theme {
             status_bar_bg: Color::Reset,
             status_bar_fg: Color::Reset,
             screen_title: Color::Reset,
+            insert_mode_bg: Color::Rgb(139, 0, 0),
+            keyboard_mode_bg: Color::Reset,
         }
     }
 }
@@ -194,6 +204,12 @@ pub fn load() -> Theme {
                 .and_then(|s| hex_to_color(s, $key, tc))
                 .unwrap_or(Color::Reset)
         };
+        ($field:expr, $key:literal, $default:expr) => {
+            $field
+                .as_deref()
+                .and_then(|s| hex_to_color(s, $key, tc))
+                .unwrap_or($default)
+        };
     }
 
     Theme {
@@ -209,6 +225,8 @@ pub fn load() -> Theme {
         status_bar_bg: resolve!(config.status_bar_bg, "status_bar_bg"),
         status_bar_fg: resolve!(config.status_bar_fg, "status_bar_fg"),
         screen_title: resolve!(config.screen_title, "screen_title"),
+        insert_mode_bg: resolve!(config.insert_mode_bg, "insert_mode_bg", Color::Rgb(139, 0, 0)),
+        keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
     }
 }
 
@@ -246,6 +264,33 @@ mod tests {
         assert_eq!(t.step_note, Color::Reset);
         assert_eq!(t.status_bar_bg, Color::Reset);
         assert_eq!(t.screen_title, Color::Reset);
+        // insert_mode_bg has a non-Reset default (dark red danger colour).
+        assert_eq!(t.insert_mode_bg, Color::Rgb(139, 0, 0));
+        assert_eq!(t.keyboard_mode_bg, Color::Reset);
+    }
+
+    #[test]
+    fn insert_mode_bg_defaults_to_dark_red_when_omitted() {
+        let t = load_from_str(Some("cursor_bg = \"#FF8C00\""));
+        assert_eq!(t.insert_mode_bg, Color::Rgb(139, 0, 0));
+    }
+
+    #[test]
+    fn insert_mode_bg_can_be_overridden() {
+        let t = load_from_str(Some("insert_mode_bg = \"#FF0000\""));
+        assert_eq!(t.insert_mode_bg, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn keyboard_mode_bg_defaults_to_reset_when_omitted() {
+        let t = load_from_str(Some("cursor_bg = \"#FF8C00\""));
+        assert_eq!(t.keyboard_mode_bg, Color::Reset);
+    }
+
+    #[test]
+    fn keyboard_mode_bg_can_be_overridden() {
+        let t = load_from_str(Some("keyboard_mode_bg = \"#0000FF\""));
+        assert_eq!(t.keyboard_mode_bg, Color::Rgb(0, 0, 255));
     }
 
     #[test]
@@ -328,6 +373,12 @@ mod tests {
                     .and_then(|s| hex_to_color(s, $key, tc))
                     .unwrap_or(Color::Reset)
             };
+            ($field:expr, $key:literal, $default:expr) => {
+                $field
+                    .as_deref()
+                    .and_then(|s| hex_to_color(s, $key, tc))
+                    .unwrap_or($default)
+            };
         }
 
         Theme {
@@ -343,6 +394,8 @@ mod tests {
             status_bar_bg: resolve!(config.status_bar_bg, "status_bar_bg"),
             status_bar_fg: resolve!(config.status_bar_fg, "status_bar_fg"),
             screen_title: resolve!(config.screen_title, "screen_title"),
+            insert_mode_bg: resolve!(config.insert_mode_bg, "insert_mode_bg", Color::Rgb(139, 0, 0)),
+            keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
         }
     }
 }

@@ -1593,30 +1593,44 @@ fn run_tui(
             let playing = app.seq_playing.load(Ordering::Relaxed);
             let seq_step = app.current_seq_step.load(Ordering::Relaxed);
             let transport = if playing {
-                format!("▶  Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
+                format!("Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
             } else {
-                format!("■  Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
+                format!("Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
             };
+
+            // Mode label: always the leftmost element in the status bar.
+            let mode_label = match app.view {
+                View::ChainView if app.chain_insert_mode => "INSERT",
+                View::PhraseEditor => match app.mode {
+                    InputMode::Normal => "NORMAL",
+                    InputMode::Insert => "INSERT",
+                    InputMode::Command => "COMMAND",
+                },
+                _ => "NORMAL",
+            };
+
+            // Insert mode is active when the mode label is INSERT.
+            let insert_active = mode_label == "INSERT";
 
             // When a render is in progress, override the status bar with progress.
             let status_text = if app.render_receiver.is_some() {
                 app.status.clone()
             } else if app.status_timer.is_some() {
-                format!("{transport}  |  {}", app.status)
+                format!("{mode_label}  |  {transport}  |  {}", app.status)
             } else {
                 match app.view {
                 View::SongView => format!(
-                    "{transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row  F3: phrase  q: quit"
+                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row  F3: phrase  q: quit"
                 ),
                 View::ChainView => {
                     if app.chain_insert_mode {
-                        "CHAIN INSERT  |  h/l: phrase ±1  ,/.: transpose ±1  Esc: normal".to_string()
+                        format!("{mode_label}  |  h/l: phrase ±1  ,/.: transpose ±1  Esc: normal")
                     } else {
-                        "CHAIN  |  j/k: nav  h/l: phrase  ,/.: transpose  a: add slot  d: del slot  Enter: phrase  i: insert  Esc: back".to_string()
+                        format!("{mode_label}  |  j/k: nav  h/l: phrase  ,/.: transpose  a: add slot  d: del slot  Enter: phrase  i: insert  Esc: back")
                     }
                 }
                 View::PhraseEditor => match app.mode {
-                    InputMode::Normal => format!("{transport}  |  {}", app.status),
+                    InputMode::Normal => format!("{mode_label}  |  {transport}  |  {}", app.status),
                     InputMode::Insert => {
                         let col_hint = match col_to_fx(app.cursor_col) {
                             Some((s, true)) => {
@@ -1632,37 +1646,43 @@ fn run_tui(
                             }
                             None => format!("Col:{} Ins:{:02}", app.cursor_col, app.active_instrument),
                         };
-                        format!("{transport}  |  INSERT  {col_hint}  |  Esc: normal")
+                        format!("{mode_label}  |  {transport}  |  {col_hint}  |  Esc: normal")
                     }
-                    InputMode::Command => format!("{transport}  |  :{}", app.cmd_buf),
+                    InputMode::Command => format!("{mode_label}  |  {transport}  |  :{}", app.cmd_buf),
                 },
                 View::InstrumentEditor => {
                     if app.instr_editing {
                         format!(
-                            "INSTR EDIT  |  Ins:{:02}  |  Enter: confirm  Esc: cancel",
+                            "{mode_label}  |  Ins:{:02}  |  Enter: confirm  Esc: cancel",
                             app.active_instrument
                         )
                     } else {
                         format!(
-                            "INSTRUMENT  |  Ins:{:02}  |  j/k: nav  h/l: change  i: edit  Enter: browse(sample)  Esc: back",
+                            "{mode_label}  |  Ins:{:02}  |  j/k: nav  h/l: change  i: edit  Enter: browse(sample)  Esc: back",
                             app.active_instrument
                         )
                     }
                 }
                 View::SampleBrowser => {
                     format!(
-                        "BROWSER  |  j/k: nav  Enter: select  Esc: cancel  ({} files)",
+                        "{mode_label}  |  j/k: nav  Enter: select  Esc: cancel  ({} files)",
                         app.browser_entries.len()
                     )
                 }
                 View::Mixer => {
                     format!(
-                        "{transport}  |  MIXER  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo  Esc: back"
+                        "{mode_label}  |  {transport}  |  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo  Esc: back"
                     )
                 }
             }};
+
+            let status_bg = if insert_active {
+                app.theme.insert_mode_bg
+            } else {
+                app.theme.status_bar_bg
+            };
             let status = Paragraph::new(status_text)
-                .style(Style::default().fg(app.theme.status_bar_fg).bg(app.theme.status_bar_bg));
+                .style(Style::default().fg(app.theme.status_bar_fg).bg(status_bg));
             frame.render_widget(status, outer[1]);
         })?;
 
