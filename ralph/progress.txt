@@ -20,3 +20,11 @@ Status: done
 Branch: ralph/issue-5
 PR: #18
 Summary: Added tracker-core::audio module with pitch-shifting Voice/Mixer (linear interp, fractional frame_pos). Phrase view renders a 16-row grid with note/instrument/FX columns. Normal/Insert/Command modes; QWERTY piano layout enters notes with live NoteOn at 2^(Δsemi/12) speed ratio. hjkl nav, yy/p copy-paste, d/Delete clear. 28 tests pass.
+
+## Iteration 5 — Sat 21 Mar 2026 03:14:56 GMT
+
+## Issue #6 — BPM sequencer: loop a phrase
+Status: done
+Branch: ralph/issue-6
+PR: #19
+Summary: Added Sequencer struct to tracker-core::audio with tick_counter-driven step advancement (never wall-clock). Swing applies an alternating duration offset to odd steps. Space/F5 transport controls, left/right arrows adjust BPM live, status bar shows ▶/■ step and BPM. 6 new sequencer tests verify 2-second timing, zero drift over 100 bars, 50% swing offset, empty step silence, live BPM change, and stopped-sequencer no-events. Total: 34 tests pass.
