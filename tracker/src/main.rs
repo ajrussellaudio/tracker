@@ -1620,13 +1620,13 @@ fn run_tui(
             } else {
                 match app.view {
                 View::SongView => format!(
-                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row  F3: phrase  q: quit"
+                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  q: quit"
                 ),
                 View::ChainView => {
                     if app.chain_insert_mode {
                         format!("{mode_label}  |  h/l: phrase ±1  ,/.: transpose ±1  Esc: normal")
                     } else {
-                        format!("{mode_label}  |  j/k: nav  h/l: phrase  ,/.: transpose  a: add slot  d: del slot  Enter: phrase  i: insert  Esc: back")
+                        format!("{mode_label}  |  j/k: nav  h/l: phrase  ,/.: transpose  o: add slot below  O: add slot above  d: del slot  Enter: phrase  i: insert  Esc: back")
                     }
                 }
                 View::PhraseEditor => match app.mode {
@@ -1767,9 +1767,18 @@ fn run_tui(
                                 app.sync_song_to_sequencer();
                             }
                         }
-                        // Append row with 'o'
+                        // Append row below cursor with 'o'
                         KeyCode::Char('o') => {
-                            app.song.arrangement.push([None; TRACKS]);
+                            app.record("add song row below");
+                            let insert_at = app.song_cursor_row + 1;
+                            app.song.arrangement.insert(insert_at, [None; TRACKS]);
+                        }
+                        // Insert row above cursor with 'O'; cursor follows original row
+                        KeyCode::Char('O') => {
+                            app.record("add song row above");
+                            let insert_at = app.song_cursor_row;
+                            app.song.arrangement.insert(insert_at, [None; TRACKS]);
+                            app.song_cursor_row += 1;
                         }
                         // Drill into chain view on Enter
                         KeyCode::Enter => {
@@ -1938,16 +1947,29 @@ fn run_tui(
                                         app.chain_insert_mode = true;
                                     }
                                 }
-                                // a: append slot
-                                KeyCode::Char('a') => {
+                                // o: insert slot below cursor
+                                KeyCode::Char('o') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("add chain slot");
-                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
-                                        app.song.chains[ci].slots.push(ChainSlot {
-                                            phrase: max_phrase.min(app.chain_cursor as u8),
+                                        app.record("add chain slot below");
+                                        let insert_at = (app.chain_cursor + 1).min(app.song.chains[ci].slots.len());
+                                        app.song.chains[ci].slots.insert(insert_at, ChainSlot {
+                                            phrase: 0,
                                             transpose: 0,
                                         });
-                                        app.chain_cursor = app.song.chains[ci].slots.len() - 1;
+                                        app.chain_cursor = insert_at;
+                                        app.sync_song_to_sequencer();
+                                    }
+                                }
+                                // O: insert slot above cursor; cursor follows original slot
+                                KeyCode::Char('O') => {
+                                    if let Some(ci) = chain_idx_opt {
+                                        app.record("add chain slot above");
+                                        let insert_at = app.chain_cursor;
+                                        app.song.chains[ci].slots.insert(insert_at, ChainSlot {
+                                            phrase: 0,
+                                            transpose: 0,
+                                        });
+                                        app.chain_cursor += 1;
                                         app.sync_song_to_sequencer();
                                     }
                                 }
@@ -3109,6 +3131,180 @@ mod tests {
         }
         // Should have exactly 1000 entries (oldest dropped)
         assert_eq!(app.history.undo_stack.len(), 1000);
+    }
+
+    #[test]
+    fn song_view_o_inserts_row_below_cursor() {
+        let mut app = make_app();
+        // Start with 1 row; cursor at row 0
+        assert_eq!(app.song.arrangement.len(), 1);
+        app.song_cursor_row = 0;
+        // Mark row 0 so we can check order after insert
+        app.song.arrangement[0][0] = Some(7);
+        // Simulate 'o': insert below cursor
+        let insert_at = app.song_cursor_row + 1;
+        app.song.arrangement.insert(insert_at, [None; TRACKS]);
+        assert_eq!(app.song.arrangement.len(), 2);
+        // Original row stays at 0, new blank row is at 1
+        assert_eq!(app.song.arrangement[0][0], Some(7));
+        assert_eq!(app.song.arrangement[1][0], None);
+        // Cursor unchanged
+        assert_eq!(app.song_cursor_row, 0);
+    }
+
+    #[test]
+    fn song_view_capital_o_inserts_row_above_cursor_and_cursor_follows() {
+        let mut app = make_app();
+        app.song.arrangement[0][0] = Some(3);
+        app.song_cursor_row = 0;
+        // Simulate 'O': insert above cursor, cursor increments to stay on original row
+        let insert_at = app.song_cursor_row;
+        app.song.arrangement.insert(insert_at, [None; TRACKS]);
+        app.song_cursor_row += 1;
+        assert_eq!(app.song.arrangement.len(), 2);
+        // New blank row at 0, original row shifted to 1
+        assert_eq!(app.song.arrangement[0][0], None);
+        assert_eq!(app.song.arrangement[1][0], Some(3));
+        // Cursor follows original row
+        assert_eq!(app.song_cursor_row, 1);
+    }
+
+    #[test]
+    fn song_view_o_inserts_row_below_cursor_at_middle_position() {
+        let mut app = make_app();
+        // Set up 3 rows: [Some(1), Some(2), Some(3)]
+        app.song.arrangement[0][0] = Some(1);
+        app.song.arrangement.push([None; TRACKS]);
+        app.song.arrangement[1][0] = Some(2);
+        app.song.arrangement.push([None; TRACKS]);
+        app.song.arrangement[2][0] = Some(3);
+        assert_eq!(app.song.arrangement.len(), 3);
+        // Cursor at row 1 (middle)
+        app.song_cursor_row = 1;
+        // Simulate 'o': insert below cursor (at index 2)
+        let insert_at = app.song_cursor_row + 1;
+        app.song.arrangement.insert(insert_at, [None; TRACKS]);
+        assert_eq!(app.song.arrangement.len(), 4);
+        // Original rows at 0 and 1 unchanged; new blank row at 2; row 3 is shifted Some(3)
+        assert_eq!(app.song.arrangement[0][0], Some(1));
+        assert_eq!(app.song.arrangement[1][0], Some(2));
+        assert_eq!(app.song.arrangement[2][0], None);
+        assert_eq!(app.song.arrangement[3][0], Some(3));
+        // Cursor stays on middle row
+        assert_eq!(app.song_cursor_row, 1);
+    }
+
+    #[test]
+    fn song_view_capital_o_inserts_row_above_middle_cursor_and_cursor_follows() {
+        let mut app = make_app();
+        // Set up 3 rows: [Some(1), Some(2), Some(3)]
+        app.song.arrangement[0][0] = Some(1);
+        app.song.arrangement.push([None; TRACKS]);
+        app.song.arrangement[1][0] = Some(2);
+        app.song.arrangement.push([None; TRACKS]);
+        app.song.arrangement[2][0] = Some(3);
+        assert_eq!(app.song.arrangement.len(), 3);
+        // Cursor at row 1 (middle)
+        app.song_cursor_row = 1;
+        // Simulate 'O': insert above cursor (at index 1), cursor increments
+        let insert_at = app.song_cursor_row;
+        app.song.arrangement.insert(insert_at, [None; TRACKS]);
+        app.song_cursor_row += 1;
+        assert_eq!(app.song.arrangement.len(), 4);
+        // Blank row inserted at index 1; original row 1 shifted to 2
+        assert_eq!(app.song.arrangement[0][0], Some(1));
+        assert_eq!(app.song.arrangement[1][0], None);
+        assert_eq!(app.song.arrangement[2][0], Some(2));
+        assert_eq!(app.song.arrangement[3][0], Some(3));
+        // Cursor follows original row to index 2
+        assert_eq!(app.song_cursor_row, 2);
+    }
+
+    #[test]
+    fn chain_view_o_inserts_slot_below_cursor() {
+        let mut app = make_app();
+        let ci = 0usize;
+        // Start with 1 slot at cursor 0
+        assert_eq!(app.song.chains[ci].slots.len(), 1);
+        app.chain_cursor = 0;
+        app.song.chains[ci].slots[0].phrase = 5;
+        // Simulate 'o': insert below cursor
+        let insert_at = (app.chain_cursor + 1).min(app.song.chains[ci].slots.len());
+        app.song.chains[ci].slots.insert(insert_at, ChainSlot { phrase: 0, transpose: 0 });
+        app.chain_cursor = insert_at;
+        assert_eq!(app.song.chains[ci].slots.len(), 2);
+        // Original slot stays at index 0
+        assert_eq!(app.song.chains[ci].slots[0].phrase, 5);
+        // New slot at index 1
+        assert_eq!(app.song.chains[ci].slots[1].phrase, 0);
+        // Cursor moved to new slot
+        assert_eq!(app.chain_cursor, 1);
+    }
+
+    #[test]
+    fn chain_view_capital_o_inserts_slot_above_cursor_and_cursor_follows() {
+        let mut app = make_app();
+        let ci = 0usize;
+        app.chain_cursor = 0;
+        app.song.chains[ci].slots[0].phrase = 5;
+        // Simulate 'O': insert above cursor, cursor increments
+        let insert_at = app.chain_cursor;
+        app.song.chains[ci].slots.insert(insert_at, ChainSlot { phrase: 0, transpose: 0 });
+        app.chain_cursor += 1;
+        assert_eq!(app.song.chains[ci].slots.len(), 2);
+        // New blank slot at index 0
+        assert_eq!(app.song.chains[ci].slots[0].phrase, 0);
+        // Original slot shifted to index 1
+        assert_eq!(app.song.chains[ci].slots[1].phrase, 5);
+        // Cursor follows original slot
+        assert_eq!(app.chain_cursor, 1);
+    }
+
+    #[test]
+    fn chain_view_o_inserts_slot_below_middle_cursor() {
+        let mut app = make_app();
+        let ci = 0usize;
+        // Set up 3 slots: phrases [1, 2, 3]
+        app.song.chains[ci].slots[0].phrase = 1;
+        app.song.chains[ci].slots.push(ChainSlot { phrase: 2, transpose: 0 });
+        app.song.chains[ci].slots.push(ChainSlot { phrase: 3, transpose: 0 });
+        assert_eq!(app.song.chains[ci].slots.len(), 3);
+        // Cursor at slot 1 (middle)
+        app.chain_cursor = 1;
+        // Simulate 'o': insert below cursor (at index 2)
+        let insert_at = (app.chain_cursor + 1).min(app.song.chains[ci].slots.len());
+        app.song.chains[ci].slots.insert(insert_at, ChainSlot { phrase: 0, transpose: 0 });
+        app.chain_cursor = insert_at;
+        assert_eq!(app.song.chains[ci].slots.len(), 4);
+        assert_eq!(app.song.chains[ci].slots[0].phrase, 1);
+        assert_eq!(app.song.chains[ci].slots[1].phrase, 2);
+        assert_eq!(app.song.chains[ci].slots[2].phrase, 0); // new blank slot
+        assert_eq!(app.song.chains[ci].slots[3].phrase, 3);
+        assert_eq!(app.chain_cursor, 2);
+    }
+
+    #[test]
+    fn chain_view_capital_o_inserts_slot_above_middle_cursor_and_cursor_follows() {
+        let mut app = make_app();
+        let ci = 0usize;
+        // Set up 3 slots: phrases [1, 2, 3]
+        app.song.chains[ci].slots[0].phrase = 1;
+        app.song.chains[ci].slots.push(ChainSlot { phrase: 2, transpose: 0 });
+        app.song.chains[ci].slots.push(ChainSlot { phrase: 3, transpose: 0 });
+        assert_eq!(app.song.chains[ci].slots.len(), 3);
+        // Cursor at slot 1 (middle)
+        app.chain_cursor = 1;
+        // Simulate 'O': insert above cursor (at index 1), cursor increments
+        let insert_at = app.chain_cursor;
+        app.song.chains[ci].slots.insert(insert_at, ChainSlot { phrase: 0, transpose: 0 });
+        app.chain_cursor += 1;
+        assert_eq!(app.song.chains[ci].slots.len(), 4);
+        assert_eq!(app.song.chains[ci].slots[0].phrase, 1);
+        assert_eq!(app.song.chains[ci].slots[1].phrase, 0); // new blank slot
+        assert_eq!(app.song.chains[ci].slots[2].phrase, 2);
+        assert_eq!(app.song.chains[ci].slots[3].phrase, 3);
+        // Cursor follows original slot to index 2
+        assert_eq!(app.chain_cursor, 2);
     }
 
     #[test]
