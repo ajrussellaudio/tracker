@@ -981,6 +981,8 @@ fn render_phrase_grid(
     cursor_col: usize,
     phrase_idx: usize,
     theme: &Theme,
+    seq_playing: bool,
+    playback_step: usize,
 ) -> Table<'static> {
     let rows: Vec<Row> = phrase
         .steps
@@ -988,6 +990,7 @@ fn render_phrase_grid(
         .enumerate()
         .map(|(i, step)| {
             let is_cursor_row = i == cursor_step;
+            let is_playback_row = seq_playing && i == playback_step;
 
             let note_str = match step.note {
                 Some(n) => note_name(n),
@@ -999,8 +1002,11 @@ fn render_phrase_grid(
             };
 
             // Base row style for non-cursor-cell content.
+            // Priority: cursor row > playback head > default beat grouping.
             let row_style = if is_cursor_row {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if is_playback_row {
+                Style::default().bg(theme.playback_head_bg)
             } else if i % 4 == 0 {
                 Style::default().fg(Color::White)
             } else {
@@ -1015,11 +1021,13 @@ fn render_phrase_grid(
             } else if step.note.is_some() {
                 if is_cursor_row {
                     Style::default().bg(Color::DarkGray).fg(theme.step_note).add_modifier(Modifier::BOLD)
+                } else if is_playback_row {
+                    Style::default().bg(theme.playback_head_bg).fg(theme.step_note)
                 } else {
                     Style::default().fg(theme.step_note)
                 }
             } else {
-                if is_cursor_row {
+                if is_cursor_row || is_playback_row {
                     row_style
                 } else {
                     Style::default().fg(theme.step_empty)
@@ -1031,11 +1039,13 @@ fn render_phrase_grid(
             } else if step.instrument.is_some() {
                 if is_cursor_row {
                     Style::default().bg(Color::DarkGray).fg(theme.step_instrument).add_modifier(Modifier::BOLD)
+                } else if is_playback_row {
+                    Style::default().bg(theme.playback_head_bg).fg(theme.step_instrument)
                 } else {
                     Style::default().fg(theme.step_instrument)
                 }
             } else {
-                if is_cursor_row {
+                if is_cursor_row || is_playback_row {
                     row_style
                 } else {
                     Style::default().fg(theme.step_empty)
@@ -1072,11 +1082,13 @@ fn render_phrase_grid(
                 } else if fx.command != 0 {
                     if is_cursor_row {
                         Style::default().bg(Color::DarkGray).fg(theme.step_fx_cmd).add_modifier(Modifier::BOLD)
+                    } else if is_playback_row {
+                        Style::default().bg(theme.playback_head_bg).fg(theme.step_fx_cmd)
                     } else {
                         Style::default().fg(theme.step_fx_cmd)
                     }
                 } else {
-                    if is_cursor_row {
+                    if is_cursor_row || is_playback_row {
                         row_style
                     } else {
                         Style::default().fg(theme.step_empty)
@@ -1087,11 +1099,13 @@ fn render_phrase_grid(
                 } else if fx.command != 0 {
                     if is_cursor_row {
                         Style::default().bg(Color::DarkGray).fg(theme.step_fx_val).add_modifier(Modifier::BOLD)
+                    } else if is_playback_row {
+                        Style::default().bg(theme.playback_head_bg).fg(theme.step_fx_val)
                     } else {
                         Style::default().fg(theme.step_fx_val)
                     }
                 } else {
-                    if is_cursor_row {
+                    if is_cursor_row || is_playback_row {
                         row_style
                     } else {
                         Style::default().fg(theme.step_empty)
@@ -1572,7 +1586,9 @@ fn run_tui(
                 }
                 View::PhraseEditor => {
                     let phrase = app.phrase();
-                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx, &app.theme);
+                    let seq_playing = app.seq_playing.load(Ordering::Relaxed);
+                    let playback_step = app.current_seq_step.load(Ordering::Relaxed) as usize;
+                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx, &app.theme, seq_playing, playback_step);
                     frame.render_widget(table, outer[0]);
                 }
                 View::InstrumentEditor => {
@@ -3316,6 +3332,51 @@ mod tests {
         app.history.clear();
         assert!(app.history.undo_stack.is_empty());
         assert!(app.history.redo_stack.is_empty());
+    }
+
+    #[test]
+    fn phrase_grid_highlights_playback_row_when_playing() {
+        use ratatui::backend::TestBackend;
+        let phrase = tracker_core::model::Phrase::default();
+        let theme = Theme::default();
+        let table = render_phrase_grid(&phrase, 0, 0, 0, &theme, true, 5);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| f.render_widget(table, f.area())).unwrap();
+        let buf = terminal.backend().buffer();
+        // Row 5 is at y = 1 (top border) + 1 (header) + 5 = 7.
+        // The step# cell (x=1) always uses row_style, which for a playback row is playback_head_bg.
+        assert_eq!(
+            buf[(1u16, 7u16)].bg,
+            Color::Rgb(0, 95, 135),
+            "playback row should carry playback_head_bg"
+        );
+    }
+
+    #[test]
+    fn phrase_grid_cursor_takes_priority_over_playback_head() {
+        use ratatui::backend::TestBackend;
+        let phrase = tracker_core::model::Phrase::default();
+        let theme = Theme::default();
+        // cursor and playback head both on row 3
+        let table = render_phrase_grid(&phrase, 3, 0, 0, &theme, true, 3);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| f.render_widget(table, f.area())).unwrap();
+        let buf = terminal.backend().buffer();
+        // Row 3 is at y = 1 (top border) + 1 (header) + 3 = 5.
+        // The step# cell (x=1) uses row_style; for a cursor row row_style is DarkGray,
+        // regardless of playback position.
+        assert_eq!(
+            buf[(1u16, 5u16)].bg,
+            Color::DarkGray,
+            "cursor style should take priority over playback head on coincident row"
+        );
+        assert_ne!(
+            buf[(1u16, 5u16)].bg,
+            Color::Rgb(0, 95, 135),
+            "playback_head_bg must not appear on cursor row when they coincide"
+        );
     }
 }
 
