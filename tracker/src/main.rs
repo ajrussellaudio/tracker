@@ -3047,6 +3047,74 @@ mod tests {
     }
 
     #[test]
+    fn browser_enter_on_dir_updates_browser_dir_and_entries() {
+        let parent = std::env::temp_dir().join("tracker_browser_enter_test");
+        let subdir = parent.join("subdir");
+        std::fs::create_dir_all(&subdir).ok();
+        std::fs::write(subdir.join("kick.wav"), b"RIFF").ok();
+
+        let mut app = make_app();
+        app.browser_dir = parent.clone();
+        app.browser_entries = list_browser_entries(&parent);
+        app.browser_cursor = 0;
+
+        // Find the index of the Dir entry
+        let dir_idx = app
+            .browser_entries
+            .iter()
+            .position(|e| matches!(e, BrowserEntry::Dir(_)))
+            .expect("should have a Dir entry");
+        app.browser_cursor = dir_idx;
+
+        app.browser_enter();
+
+        assert_eq!(app.browser_dir, subdir, "browser_dir should update to subdir");
+        assert_eq!(app.browser_cursor, 0, "cursor should reset to 0");
+        let has_wav = app
+            .browser_entries
+            .iter()
+            .any(|e| matches!(e, BrowserEntry::Wav(n) if n == "kick.wav"));
+        assert!(has_wav, "browser_entries should contain kick.wav after entering subdir");
+
+        // Clean up
+        std::fs::remove_file(subdir.join("kick.wav")).ok();
+        std::fs::remove_dir(&subdir).ok();
+        std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn browser_go_up_navigates_to_parent() {
+        let parent = std::env::temp_dir().join("tracker_go_up_test");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).ok();
+
+        let mut app = make_app();
+        app.browser_dir = child.clone();
+        app.browser_entries = list_browser_entries(&child);
+
+        app.browser_go_up();
+
+        assert_eq!(app.browser_dir, parent, "browser_dir should be the parent after go_up");
+        assert_eq!(app.browser_cursor, 0, "cursor should reset to 0");
+
+        // Clean up
+        std::fs::remove_dir(&child).ok();
+        std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn browser_go_up_at_root_does_nothing() {
+        let root = PathBuf::from("/");
+        let mut app = make_app();
+        app.browser_dir = root.clone();
+        app.browser_entries = Vec::new();
+
+        app.browser_go_up();
+
+        assert_eq!(app.browser_dir, root, "browser_dir should not change when already at root");
+    }
+
+    #[test]
     fn song_view_assign_chain_persists() {
         let mut app = make_app();
         app.song_cursor_row = 0;
