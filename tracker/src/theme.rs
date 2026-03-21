@@ -21,13 +21,15 @@ struct ThemeConfig {
     screen_title: Option<String>,
     insert_mode_bg: Option<String>,
     keyboard_mode_bg: Option<String>,
+    playback_head_bg: Option<String>,
 }
 
 // ── Resolved theme ────────────────────────────────────────────────────────────
 
 /// Resolved ratatui colors for all named theme keys.
 /// All fields default to `Color::Reset` (terminal defaults) when no theme is loaded,
-/// except `insert_mode_bg` which defaults to a dark red danger colour.
+/// except `insert_mode_bg` which defaults to a dark red danger colour, and
+/// `playback_head_bg` which defaults to a muted dark blue.
 pub struct Theme {
     pub cursor_bg: Color,
     pub cursor_fg: Color,
@@ -46,6 +48,8 @@ pub struct Theme {
     /// Status bar background when the app is in Keyboard mode (wired up by the Keyboard mode issue).
     #[allow(dead_code)]
     pub keyboard_mode_bg: Color,
+    /// Row background for the sequencer playback head in the Phrase Editor.
+    pub playback_head_bg: Color,
 }
 
 impl Default for Theme {
@@ -65,6 +69,7 @@ impl Default for Theme {
             screen_title: Color::Reset,
             insert_mode_bg: Color::Rgb(139, 0, 0),
             keyboard_mode_bg: Color::Reset,
+            playback_head_bg: Color::Rgb(0, 95, 135),
         }
     }
 }
@@ -227,6 +232,7 @@ pub fn load() -> Theme {
         screen_title: resolve!(config.screen_title, "screen_title"),
         insert_mode_bg: resolve!(config.insert_mode_bg, "insert_mode_bg", Color::Rgb(139, 0, 0)),
         keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
+        playback_head_bg: resolve!(config.playback_head_bg, "playback_head_bg", Color::Rgb(0, 95, 135)),
     }
 }
 
@@ -267,6 +273,8 @@ mod tests {
         // insert_mode_bg has a non-Reset default (dark red danger colour).
         assert_eq!(t.insert_mode_bg, Color::Rgb(139, 0, 0));
         assert_eq!(t.keyboard_mode_bg, Color::Reset);
+        // playback_head_bg has a non-Reset default (muted dark blue).
+        assert_eq!(t.playback_head_bg, Color::Rgb(0, 95, 135));
     }
 
     #[test]
@@ -291,6 +299,24 @@ mod tests {
     fn keyboard_mode_bg_can_be_overridden() {
         let t = load_from_str(Some("keyboard_mode_bg = \"#0000FF\""));
         assert_eq!(t.keyboard_mode_bg, Color::Rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn playback_head_bg_defaults_to_dark_blue_when_omitted() {
+        let t = load_from_str(Some("cursor_bg = \"#FF8C00\""));
+        assert_eq!(t.playback_head_bg, Color::Rgb(0, 95, 135));
+    }
+
+    #[test]
+    fn playback_head_bg_can_be_overridden() {
+        let t = load_from_str(Some("playback_head_bg = \"#005FFF\""));
+        assert_eq!(t.playback_head_bg, Color::Rgb(0, 95, 255));
+    }
+
+    #[test]
+    fn default_theme_playback_head_bg_is_dark_blue() {
+        let t = Theme::default();
+        assert_eq!(t.playback_head_bg, Color::Rgb(0, 95, 135));
     }
 
     #[test]
@@ -396,6 +422,7 @@ mod tests {
             screen_title: resolve!(config.screen_title, "screen_title"),
             insert_mode_bg: resolve!(config.insert_mode_bg, "insert_mode_bg", Color::Rgb(139, 0, 0)),
             keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
+            playback_head_bg: resolve!(config.playback_head_bg, "playback_head_bg", Color::Rgb(0, 95, 135)),
         }
     }
 }

@@ -981,6 +981,8 @@ fn render_phrase_grid(
     cursor_col: usize,
     phrase_idx: usize,
     theme: &Theme,
+    seq_playing: bool,
+    playback_step: usize,
 ) -> Table<'static> {
     let rows: Vec<Row> = phrase
         .steps
@@ -988,6 +990,7 @@ fn render_phrase_grid(
         .enumerate()
         .map(|(i, step)| {
             let is_cursor_row = i == cursor_step;
+            let is_playback_row = seq_playing && i == playback_step;
 
             let note_str = match step.note {
                 Some(n) => note_name(n),
@@ -999,8 +1002,11 @@ fn render_phrase_grid(
             };
 
             // Base row style for non-cursor-cell content.
+            // Priority: cursor row > playback head > default beat grouping.
             let row_style = if is_cursor_row {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if is_playback_row {
+                Style::default().bg(theme.playback_head_bg)
             } else if i % 4 == 0 {
                 Style::default().fg(Color::White)
             } else {
@@ -1015,11 +1021,13 @@ fn render_phrase_grid(
             } else if step.note.is_some() {
                 if is_cursor_row {
                     Style::default().bg(Color::DarkGray).fg(theme.step_note).add_modifier(Modifier::BOLD)
+                } else if is_playback_row {
+                    Style::default().bg(theme.playback_head_bg).fg(theme.step_note)
                 } else {
                     Style::default().fg(theme.step_note)
                 }
             } else {
-                if is_cursor_row {
+                if is_cursor_row || is_playback_row {
                     row_style
                 } else {
                     Style::default().fg(theme.step_empty)
@@ -1031,11 +1039,13 @@ fn render_phrase_grid(
             } else if step.instrument.is_some() {
                 if is_cursor_row {
                     Style::default().bg(Color::DarkGray).fg(theme.step_instrument).add_modifier(Modifier::BOLD)
+                } else if is_playback_row {
+                    Style::default().bg(theme.playback_head_bg).fg(theme.step_instrument)
                 } else {
                     Style::default().fg(theme.step_instrument)
                 }
             } else {
-                if is_cursor_row {
+                if is_cursor_row || is_playback_row {
                     row_style
                 } else {
                     Style::default().fg(theme.step_empty)
@@ -1072,11 +1082,13 @@ fn render_phrase_grid(
                 } else if fx.command != 0 {
                     if is_cursor_row {
                         Style::default().bg(Color::DarkGray).fg(theme.step_fx_cmd).add_modifier(Modifier::BOLD)
+                    } else if is_playback_row {
+                        Style::default().bg(theme.playback_head_bg).fg(theme.step_fx_cmd)
                     } else {
                         Style::default().fg(theme.step_fx_cmd)
                     }
                 } else {
-                    if is_cursor_row {
+                    if is_cursor_row || is_playback_row {
                         row_style
                     } else {
                         Style::default().fg(theme.step_empty)
@@ -1087,11 +1099,13 @@ fn render_phrase_grid(
                 } else if fx.command != 0 {
                     if is_cursor_row {
                         Style::default().bg(Color::DarkGray).fg(theme.step_fx_val).add_modifier(Modifier::BOLD)
+                    } else if is_playback_row {
+                        Style::default().bg(theme.playback_head_bg).fg(theme.step_fx_val)
                     } else {
                         Style::default().fg(theme.step_fx_val)
                     }
                 } else {
-                    if is_cursor_row {
+                    if is_cursor_row || is_playback_row {
                         row_style
                     } else {
                         Style::default().fg(theme.step_empty)
@@ -1572,7 +1586,9 @@ fn run_tui(
                 }
                 View::PhraseEditor => {
                     let phrase = app.phrase();
-                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx, &app.theme);
+                    let seq_playing = app.seq_playing.load(Ordering::Relaxed);
+                    let playback_step = app.current_seq_step.load(Ordering::Relaxed) as usize;
+                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx, &app.theme, seq_playing, playback_step);
                     frame.render_widget(table, outer[0]);
                 }
                 View::InstrumentEditor => {

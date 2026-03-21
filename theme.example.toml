@@ -30,6 +30,10 @@ step_fx_val = "#FFD700"
 # Empty / unfilled step cells ("---" or "--").
 step_empty = "#555555"
 
+# Row background for the sequencer playback head (only visible while playing).
+# Defaults to a muted dark blue (#005F87).
+playback_head_bg = "#005F87"
+
 # ── Track / chain colours ─────────────────────────────────────────────────────
 # Filled chain/phrase slots in the song and chain views.
 active_track = "#00FF87"
