@@ -12,7 +12,7 @@ Before doing anything else, make sure the workspace is up to date:
 If you are resuming a partial iteration (a `ralph/issue-<N>` branch already exists with commits not yet in main):
 - Check whether that branch needs rebasing: `git log --oneline origin/main..ralph/issue-<N>`
 - If it's already ahead of main cleanly, check it out and continue from where you left off.
-- If it has diverged (main moved while you were working), rebase it: `git rebase origin/main ralph/issue-<N>`, resolve any conflicts, then continue.
+- If it has diverged (main moved while you were working), rebase it onto main, resolve any conflicts, run `cargo test`, then continue.
 
 ## Step 1 — Get up to speed
 
@@ -22,24 +22,143 @@ Use sub-agents for the following orientation tasks so you don't burn your primar
 - Run `git log --oneline -20` to see recent commits.
 - Use the GitHub MCP tools to list all open issues in `ajrussellaudio/tracker`, excluding issue #1 (the PRD, which stays open permanently).
 
-## Step 2 — Pick one issue
+## Step 2 — Decide what to work on
 
-- List all open issues (excluding #1) using the GitHub MCP tools.
-- List all open PRs to find which issues already have a `ralph/issue-<N>` branch with an open PR.
-- Choose the **single most important** open issue that:
-  - is not blocked by incomplete work, and
-  - does **not** already have an open PR.
-- Use your own judgement. Do not ask. Do not pick more than one.
-- If every open issue (excluding #1) already has an open PR, skip to Step 7 immediately.
+Use GitHub MCP tools to list all open PRs with branches named `ralph/issue-*`.
 
-## Step 3 — Implement it
+### If there are open ralph PRs
+
+Find the **lowest-numbered** open ralph PR and inspect it. Use the GitHub MCP tools to:
+- Count how many `REQUEST_CHANGES` reviews it already has.
+- Check whether any commits have been pushed **after** the most recent `REQUEST_CHANGES` review (if any).
+
+Choose a mode based on this table:
+
+| PR state | Mode |
+|---|---|
+| No reviews yet | → **[Review Mode](#review-mode)** |
+| `REQUEST_CHANGES` exists, no new commits since | → **[Fix Mode](#fix-mode)** |
+| `REQUEST_CHANGES` round 1, new commits exist | → **[Review Mode round 2](#review-mode)** |
+| `REQUEST_CHANGES` round 2, new commits exist | → **[Force-Approve Mode](#force-approve-mode)** |
+| `APPROVED`, not yet merged | → **[Merge Mode](#merge-mode)** |
+
+### If there are no open ralph PRs
+
+- List all open issues (excluding #1).
+- Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one.
+- Proceed to **[Implement Mode](#implement-mode)**.
+- If no open issues remain, proceed to **[Step 7](#step-7--decide-what-comes-next)**.
+
+---
+
+## Review Mode
+
+You are reviewing PR `#<N>`. Delegate the actual review to a sub-agent — do not review the code yourself.
+
+Launch a **general-purpose sub-agent** with this prompt:
+
+> "Review PR #\<N\> in ajrussellaudio/tracker.
+> Get the diff with: `gh pr diff <N>`
+> Get the PR description using GitHub MCP tools.
+> Run the test suite: `cargo test`
+> You are a strict Rust code reviewer with no attachment to this code.
+> Surface only: genuine bugs, logic errors, missing test coverage for new behaviour, or security issues.
+> Do NOT comment on: style, formatting, naming conventions, or speculative concerns.
+> For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
+> If you find no genuine issues, return exactly the word: LGTM"
+
+Based on the sub-agent's response:
+
+**If LGTM, or if this is round 2 and there are no genuine bugs:**
+- Submit an Approve review: `gh pr review <N> --approve --body "LGTM"`
+- Immediately proceed to **[Merge Mode](#merge-mode)**.
+
+**If issues found (round 1):**
+- Submit a Request Changes review listing each issue specifically:
+  ```bash
+  gh pr review <N> --request-changes --body "<list of issues>"
+  ```
+- Stop here. The next iteration will enter Fix Mode.
+
+**If issues found (round 2):**
+- Even if genuine bugs are found, this is the last review round.
+- If the issues are genuine bugs: submit one final REQUEST_CHANGES, note in `ralph/progress.txt` that this PR has hit the review cap. The *next* check will force-approve regardless.
+- If the issues are minor: approve anyway with a note: `gh pr review <N> --approve --body "Approving after two review rounds. Minor concerns: <list>"`
+- Stop here (unless you approved, in which case proceed to Merge Mode).
+
+---
+
+## Fix Mode
+
+PR `#<N>` has `REQUEST_CHANGES` review comments that need addressing.
+
+1. Use GitHub MCP tools to read the review comments on the PR.
+2. Check out the PR branch: `git checkout ralph/issue-<N>`
+3. Implement the requested changes. Delegate large file reads to sub-agents.
+4. Run `cargo test` using a sub-agent. Fix any failures.
+5. Commit: `git commit -m "fix: address review comments on PR #<N>"`
+6. Push: `git push origin ralph/issue-<N>`
+7. Stop here. The next iteration will enter Review Mode (round 2).
+
+---
+
+## Force-Approve Mode
+
+PR `#<N>` has already had two rounds of review and fixes. Approve it unconditionally.
+
+1. `gh pr review <N> --approve --body "Approving after reaching review round cap."`
+2. Log in `ralph/progress.txt`: `"PR #<N> approved after max review rounds."`
+3. Proceed immediately to **[Merge Mode](#merge-mode)**.
+
+---
+
+## Merge Mode
+
+PR `#<N>` is approved. Merge it and rebase all downstream branches.
+
+1. Merge using a merge commit (never squash — this preserves SHAs for the downstream chain):
+   ```bash
+   gh pr merge <N> --merge
+   ```
+2. Pull latest main:
+   ```bash
+   git checkout main && git pull --ff-only origin main
+   ```
+3. Find all open `ralph/issue-*` PRs with a PR number greater than `<N>`. For each, in ascending order:
+   - Note the tip SHA of the just-merged branch before it was deleted (use `git log` or the PR's merge info to find the last commit of the merged branch).
+   - Fetch and rebase the downstream branch onto the new main:
+     ```bash
+     git fetch origin ralph/issue-<M>
+     git rebase --onto main <old-tip-sha> ralph/issue-<M>
+     ```
+   - If the rebase succeeds and `cargo test` passes: `git push --force-with-lease origin ralph/issue-<M>`
+   - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run `cargo test` to verify. If tests pass, continue the rebase and push.
+   - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, append to `ralph/progress.txt`:
+     ```
+     ⚠️  Downstream rebase for ralph/issue-<M> needs human attention.
+     Conflict in: <file(s)>
+     Description: <what the conflict is about>
+     ```
+     and stop.
+4. Append to `ralph/progress.txt`:
+   ```
+   ## Merged PR #<N> — <title>
+   Downstream rebased: ralph/issue-<M>, ...
+   ```
+5. Stop here. The next iteration will process the next open PR or implement a new issue.
+
+---
+
+## Implement Mode
+
+### Step 3 — Implement the issue
 
 - Check out a new branch: `ralph/issue-<N>` (e.g. `ralph/issue-2`).
 - Read the issue body carefully. The acceptance criteria are the source of truth — do not modify them.
 - Implement everything required to satisfy all acceptance criteria.
 - Delegate expensive work to sub-agents where possible (e.g. running the test suite, reading large files, summarising command output) to keep your primary context window lean.
 
-## Step 4 — Verify
+### Step 4 — Verify
 
 Run the following checks using a sub-agent. **Both must pass before you continue:**
 
@@ -53,7 +172,7 @@ If either check fails and you cannot fix it after a genuine effort, **do not ope
 - Note what you attempted and why it failed in `ralph/progress.txt`
 - Move on to Step 5 and treat this issue as skipped
 
-## Step 5 — Commit and open a PR
+### Step 5 — Commit and open a PR
 
 If the checks passed:
 
@@ -64,7 +183,7 @@ If the checks passed:
   - Note any limitations or known rough edges
 - Do **not** close the GitHub issue manually — it will be closed automatically when the PR is merged.
 
-## Step 6 — Update the progress log
+### Step 6 — Update the progress log
 
 Append a brief entry to `ralph/progress.txt` and commit it:
 
@@ -76,23 +195,27 @@ PR: #<PR number> (or N/A if skipped)
 Summary: <one or two sentences>
 ```
 
+---
+
 ## Step 7 — Decide what comes next
 
-- List all open issues (excluding #1) using the GitHub MCP tools.
-- List all open PRs to see which issues already have a `ralph/issue-<N>` PR in flight.
+- List all open issues (excluding #1).
+- List all open `ralph/issue-*` PRs.
 
-- **If every open issue (excluding #1) either is already closed or has an open PR:** emit this token on a line by itself and stop:
+- **If there are no open issues (excluding #1) AND no open ralph PRs:** emit this token on a line by itself and stop:
 
   <promise>COMPLETE</promise>
 
-- **Otherwise:** stop here. The loop will restart and pick up the next issue.
+- **Otherwise:** stop here. The loop will restart.
 
 ---
 
 ## Ground rules
 
-- **One issue per iteration.** Never implement more than one.
+- **One task per iteration.** Implement one issue, OR review one PR, OR fix one PR, OR merge one PR. Never more than one.
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
 - **Never touch issue #1.** It is the PRD and must remain open.
 - **Never commit directly to `main`.** Always use a `ralph/issue-<N>` branch.
+- **Always merge with `--merge`, never `--squash`.** Squash breaks the downstream rebase chain.
+
