@@ -48,54 +48,12 @@ Branch: ralph/issue-8
 PR: #21
 Summary: Added SongView (8-col × N-row arrangement grid) and ChainView (phrase slots with semitone transpose). Sequencer extended to 8 independent tracks each tracking song_row/chain_slot; playback wraps to row 0 (loops). ChainSlot replaces Chain.phrases; Song gains arrangement field; CURRENT_VERSION bumped to 2. Screen navigation stack (push_view/pop_view) with Esc/Backspace pop-back and F1/F3/F4 hotkeys. 57 tests pass (6 new).
 
-## Merged PR #22 — FX slots with VOL/PAN/PIT/RET commands and 2D phrase cursor
-Fixes applied before merge: retriggers.clear() on Command::Stop; PIT FX speed tests added.
-Downstream rebased: (none)
+## Iteration 1 — Sat 21 Mar 2026 09:46:58 GMT
 
-## Iteration 2 — Sat 21 Mar 2026 09:47:04 GMT
+## Iteration 2 — Sat 21 Mar 2026 10:00:48 GMT
 
-## Issue #9 — FX slots: 4-column per-step automation
-Status: done
-Branch: ralph/issue-9
-PR: #22
-Summary: Added FxCommand enum (VOL/PAN/PIT/RET) with dispatch-table design; StepEvent carries per-track FX arrays; Voice/Mixer gain trigger_with_fx for per-step volume/pan; sequencer apply FX at step time; RET schedules buffer-granularity retriggers; phrase grid expanded to 11 cols with 2D cursor (h/l nav, insert mode for cmd/val entry). 64 tests pass (7 new).
+## Iteration 3 — Sat 21 Mar 2026 10:06:58 GMT
 
-## Iteration 3 — Sat 21 Mar 2026 10:17:15 UTC
+## Iteration 4 — Sat 21 Mar 2026 10:17:28 GMT
 
-## Issue #10 — Mixer view: per-track vol/pan/mute/solo/FX send
-Status: done
-Branch: ralph/issue-10
-PR: #23
-Summary: Added MixerTrack struct to Song (volume/pan/mute/solo/fx_send), persisted via bincode/JSON. Four new Command variants drive immediate playback changes (mute silences track, solo silences others). View::Mixer screen (F2 to open) renders 8-track×5-field grid with Cyan cursor, red mute, yellow solo indicators. 74 tests pass (8 new).
-
-## Merged PR #23 — Mixer view with per-track vol/pan/mute/solo/FX send
-Fixes applied before merge: volume clamp 1.0→2.0 in trigger_with_fx; #[serde(default)] on Song::mixer for v2 JSON compat; 2 new tests.
-Downstream rebased: (none)
-
-## Merged PR #24 — WAV export — offline renderer with :export-mix and :export-stems
-Fixes applied before merge: steps_seen initialised to 1 to avoid double-triggering step 0; regression test step_0_fires_exactly_once_per_phrase_cycle added. All 82 tests pass.
-Downstream rebased: (none)
-
-## Issue #12 — Undo/redo stack
-Status: done
-Branch: ralph/issue-12
-PR: #26
-Summary: Snapshot-based undo/redo (u / Ctrl+R) covering all mutation sites across all views. History capped at 1000, cleared on :e. 2-second timed status bar messages. 4 new tests; 86 total.
-
-## Iteration 4 — Sat 21 Mar 2026 10:25:13 UTC
-
-## Issue #11 — WAV export: full song mix + per-stem files
-Status: done
-Branch: ralph/issue-11
-PR: #24
-Summary: Added tracker-core::render module with offline render_to_buffer(); :export-mix and :export-stems colon commands run on a background thread with live progress in the status bar. Stereo 48 kHz f32 WAV via hound. 5 new tests; 81 total pass.
-
-## Iteration 5 — Sat 21 Mar 2026 11:28:00 UTC
-
-PR #26 review round 2: found genuine bug (spurious record() call before arrangement clear guard in song view). Posted REQUEST_CHANGES (round 2). PR #26 has now hit the review cap — next iteration will force-approve.
-
-## Iteration 6 — Sat 21 Mar 2026 11:31:52 UTC
-
-## Merged PR #26 — feat: undo/redo stack with snapshot history
-Downstream rebased: (none)
-PR #26 approved after max review rounds.
+## Iteration 5 — Sat 21 Mar 2026 10:25:07 GMT

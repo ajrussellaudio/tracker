@@ -51,6 +51,8 @@ Choose a mode based on this table:
 
 You are reviewing PR `#<N>`. Delegate the actual review to a sub-agent — do not review the code yourself.
 
+### Round 1
+
 Launch a **general-purpose sub-agent** with this prompt:
 
 > "Review PR #\<N\> in ajrussellaudio/tracker.
@@ -63,11 +65,35 @@ Launch a **general-purpose sub-agent** with this prompt:
 > For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
 > If you find no genuine issues, return exactly the word: LGTM"
 
-Based on the sub-agent's response, post a PR comment using `gh pr comment <N> --body "..."`.
+**If LGTM:** post an APPROVED comment (see below) and proceed to **[Merge Mode](#merge-mode)**.
 
-**If LGTM, or if this is round 2 and there are no genuine bugs:**
+**If issues found:** post a REQUEST_CHANGES comment (see below) and stop. The next iteration enters Fix Mode.
 
-Post this comment:
+### Round 2
+
+Do **not** re-review the whole PR. The goal is only to verify the round 1 issues were fixed.
+
+Launch a **general-purpose sub-agent** with this prompt:
+
+> "You are verifying fixes on PR #\<N\> in ajrussellaudio/tracker.
+> Get the diff with: `gh pr diff <N>`
+> Run the test suite: `cargo test`
+> The previous review raised these specific issues:
+> \<paste the full body of the round 1 REQUEST_CHANGES comment here\>
+> Check only whether each of those issues has been resolved in the latest diff.
+> Do NOT raise new issues — only assess the original ones.
+> For each original issue, state: RESOLVED or UNRESOLVED (with a brief reason).
+> If all are RESOLVED, return exactly the word: LGTM"
+
+**If LGTM (all resolved):** post an APPROVED comment and proceed to **[Merge Mode](#merge-mode)**.
+
+**If any issues are UNRESOLVED:** this is the final round — post a REQUEST_CHANGES comment listing only the still-unresolved items. The next check will Force-Approve regardless.
+
+---
+
+### Comment formats
+
+**APPROVED:**
 ```
 <!-- RALPH-REVIEW: APPROVED -->
 
@@ -75,11 +101,8 @@ LGTM — no blocking issues found. ✅
 
 — Ralph 🤖
 ```
-Then immediately proceed to **[Merge Mode](#merge-mode)**.
 
-**If issues found (round 1):**
-
-Post this comment:
+**REQUEST_CHANGES:**
 ```
 <!-- RALPH-REVIEW: REQUEST_CHANGES -->
 
@@ -90,12 +113,6 @@ The following issues need addressing before this can merge:
 
 — Ralph 🤖
 ```
-Stop here. The next iteration will enter Fix Mode.
-
-**If issues found (round 2):**
-- Even if genuine bugs are found, this is the last review round.
-- If the issues are genuine bugs: post a final `REQUEST_CHANGES` comment and note in `ralph/progress.txt` that this PR has hit the review cap. The *next* check will force-approve regardless.
-- If the issues are minor: post an `APPROVED` comment with a note of the minor concerns. Proceed to Merge Mode.
 
 ---
 
@@ -104,12 +121,13 @@ Stop here. The next iteration will enter Fix Mode.
 PR `#<N>` has a `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` comment that needs addressing.
 
 1. Use `gh pr view <N> --comments` or GitHub MCP tools to read the REQUEST_CHANGES comment.
-2. Check out the PR branch: `git checkout ralph/issue-<N>`
-3. Implement the requested changes. Delegate large file reads to sub-agents.
-4. Run `cargo test` using a sub-agent. Fix any failures.
-5. Commit: `git commit -m "fix: address review comments on PR #<N>"`
-6. Push: `git push origin ralph/issue-<N>`
-7. Stop here. The next iteration will enter Review Mode (round 2).
+2. Read **every** issue listed — Fix Mode must address **all of them** in one pass, not just some.
+3. Check out the PR branch: `git checkout ralph/issue-<N>`
+4. Implement fixes for every raised issue. Delegate large file reads to sub-agents.
+5. Run `cargo test` using a sub-agent. Fix any failures.
+6. Commit: `git commit -m "fix: address review comments on PR #<N>"`
+7. Push: `git push origin ralph/issue-<N>`
+8. Stop here. The next iteration will enter Review Mode (round 2).
 
 ---
 
