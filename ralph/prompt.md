@@ -58,7 +58,7 @@ Launch a **general-purpose sub-agent** with this prompt:
 > Get the diff with: `gh pr diff <N>`
 > Get the PR description using GitHub MCP tools.
 > Run the test suite using the test command from `ralph/project.md`.
-> You are a strict Rust code reviewer with no attachment to this code.
+> You are a strict code reviewer with no attachment to this code.
 > Surface only: genuine bugs, logic errors, missing test coverage for new behaviour, or security issues.
 > Do NOT comment on: style, formatting, naming conventions, or speculative concerns.
 > For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
