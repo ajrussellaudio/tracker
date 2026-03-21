@@ -272,6 +272,23 @@ Shown when `tracker` is launched with no arguments.
 
 ---
 
+### Keyboard Mode
+
+A performance mode that lets you play notes on the QWERTY piano without writing anything to the pattern.
+
+**Navigation to:** `/` from Song View, Chain View, or Phrase Editor (Normal Mode)
+
+| Key | Action |
+|-----|--------|
+| QWERTY piano | Play the corresponding note on the active instrument |
+| `[` | Decrement active instrument index (clamped at 0) |
+| `]` | Increment active instrument index (clamped at 255) |
+| `Esc` | Return to Normal mode |
+
+The active instrument index is remembered when leaving and re-entering Keyboard mode. The status bar displays `KEYBOARD` and uses the `keyboard_mode_bg` theme colour.
+
+---
+
 ### Mixer View
 
 Per-track volume, pan, mute, solo, and FX send for all 8 tracks.

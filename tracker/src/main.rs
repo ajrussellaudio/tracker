@@ -107,10 +107,12 @@ enum BrowserMode {
     Project,
 }
 
+#[derive(Debug, PartialEq)]
 enum InputMode {
     Normal,
     Insert,
     Command,
+    Keyboard,
 }
 
 /// An entry in the sample browser: either a subdirectory or a `.wav` file.
@@ -233,6 +235,8 @@ struct App {
     mixer_cursor_track: usize,
     /// Mixer view: active field row (0=VOL, 1=PAN, 2=MUTE, 3=SOLO, 4=SEND).
     mixer_cursor_field: usize,
+    /// Keyboard mode: last used instrument slot index (0–255); persists across mode entries.
+    keyboard_instrument: usize,
     /// Background WAV render thread (Some while render is in progress).
     render_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     /// Render progress 0–100, written by the render thread, read by the TUI.
@@ -288,6 +292,7 @@ impl App {
             fx_edit_buf: String::new(),
             mixer_cursor_track: 0,
             mixer_cursor_field: 0,
+            keyboard_instrument: 0,
             render_receiver: None,
             render_progress: Arc::new(AtomicU32::new(0)),
             history: History::new(),
@@ -818,6 +823,26 @@ impl App {
             self.sync_mixer_to_audio();
         } else {
             self.set_timed_status("Nothing to redo".to_string());
+        }
+    }
+
+    fn enter_keyboard_mode(&mut self) {
+        self.mode = InputMode::Keyboard;
+    }
+
+    fn exit_keyboard_mode(&mut self) {
+        self.mode = InputMode::Normal;
+    }
+
+    fn keyboard_instrument_prev(&mut self) {
+        if self.keyboard_instrument > 0 {
+            self.keyboard_instrument -= 1;
+        }
+    }
+
+    fn keyboard_instrument_next(&mut self) {
+        if self.keyboard_instrument < 255 {
+            self.keyboard_instrument += 1;
         }
     }
 }
@@ -1839,21 +1864,29 @@ fn run_tui(
 
             // Mode label: always the leftmost element in the status bar.
             let mode_label = match app.view {
+                _ if matches!(app.mode, InputMode::Keyboard) => "KEYBOARD",
                 View::ChainView if app.chain_insert_mode => "INSERT",
                 View::PhraseEditor => match app.mode {
                     InputMode::Normal => "NORMAL",
                     InputMode::Insert => "INSERT",
                     InputMode::Command => "COMMAND",
+                    InputMode::Keyboard => "KEYBOARD",
                 },
                 _ => "NORMAL",
             };
 
             // Insert mode is active when the mode label is INSERT.
             let insert_active = mode_label == "INSERT";
+            let keyboard_active = mode_label == "KEYBOARD";
 
             // When a render is in progress, override the status bar with progress.
             let status_text = if app.render_receiver.is_some() {
                 app.status.clone()
+            } else if keyboard_active {
+                format!(
+                    "{mode_label}  |  {transport}  |  Ins:{:02}  [/]: change instrument  QWERTY: play note  Esc: normal",
+                    app.keyboard_instrument
+                )
             } else if app.status_timer.is_some() {
                 format!("{mode_label}  |  {transport}  |  {}", app.status)
             } else {
@@ -1889,6 +1922,8 @@ fn run_tui(
                         format!("{mode_label}  |  {transport}  |  {col_hint}  |  Esc: normal")
                     }
                     InputMode::Command => format!("{mode_label}  |  {transport}  |  :{}", app.cmd_buf),
+                    // InputMode::Keyboard is handled by the `keyboard_active` branch above
+                    InputMode::Keyboard => unreachable!("Keyboard mode status handled before view match"),
                 },
                 View::InstrumentEditor => {
                     if app.instr_editing {
@@ -1918,6 +1953,8 @@ fn run_tui(
 
             let status_bg = if insert_active {
                 app.theme.insert_mode_bg
+            } else if keyboard_active {
+                app.theme.keyboard_mode_bg
             } else {
                 app.theme.status_bar_bg
             };
@@ -1942,6 +1979,36 @@ fn run_tui(
                         continue;
                     }
                 }
+                // ── Global: Keyboard mode overrides all per-view key handling ─
+                if matches!(app.mode, InputMode::Keyboard) {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.exit_keyboard_mode();
+                        }
+                        KeyCode::Char('[') => {
+                            app.keyboard_instrument_prev();
+                        }
+                        KeyCode::Char(']') => {
+                            app.keyboard_instrument_next();
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(semitone) = qwerty_to_semitone(c) {
+                                let base: i32 = 12 * (app.octave as i32 + 1);
+                                let midi = (base + semitone as i32).clamp(0, 127) as u8;
+                                let slot = app.keyboard_instrument as u8;
+                                let root = app.song.instruments
+                                    .get(app.keyboard_instrument)
+                                    .map(|i| i.root_note)
+                                    .unwrap_or(app.sample_root);
+                                let speed = pitch_speed(midi, root);
+                                app.send_cmd(Command::NoteOn { slot, speed });
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match app.view {
                     // ──────────────────────────────────────────────────────────
                     // Startup screen key handling
@@ -2070,6 +2137,9 @@ fn run_tui(
                         }
                         KeyCode::F(4) => {
                             app.push_view(View::InstrumentEditor);
+                        }
+                        KeyCode::Char('/') => {
+                            app.enter_keyboard_mode();
                         }
                         _ => {}
                     },
@@ -2273,6 +2343,9 @@ fn run_tui(
                                     app.push_view(View::PhraseEditor);
                                     app.mode = InputMode::Normal;
                                 }
+                                KeyCode::Char('/') => {
+                                    app.enter_keyboard_mode();
+                                }
                                 _ => {}
                             }
                         }
@@ -2373,6 +2446,9 @@ fn run_tui(
                                         app.phrase_mut().steps[idx] = s;
                                         app.sync_phrase_to_sequencer();
                                     }
+                                }
+                                KeyCode::Char('/') => {
+                                    app.enter_keyboard_mode();
                                 }
                                 _ => {}
                             }
@@ -2533,6 +2609,9 @@ fn run_tui(
                             }
                             _ => {}
                         },
+                        // Keyboard mode is handled globally before this match; this arm
+                        // is unreachable but required for exhaustiveness.
+                        InputMode::Keyboard => {}
                     },
 
                     // ──────────────────────────────────────────────────────────
@@ -3777,6 +3856,66 @@ mod tests {
     fn parse_args_unknown_flag_gives_error() {
         let args: Vec<String> = vec!["tracker".to_string(), "--unknown".to_string()];
         assert!(parse_args(&args).is_err(), "unknown flag should return an error");
+    }
+
+    // ── Keyboard mode tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn keyboard_mode_enter_sets_mode() {
+        let mut app = make_app();
+        assert_eq!(app.mode, InputMode::Normal);
+        app.enter_keyboard_mode();
+        assert_eq!(app.mode, InputMode::Keyboard);
+    }
+
+    #[test]
+    fn keyboard_mode_esc_returns_to_normal() {
+        let mut app = make_app();
+        app.enter_keyboard_mode();
+        app.exit_keyboard_mode();
+        assert_eq!(app.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn keyboard_instrument_prev_clamps_at_zero() {
+        let mut app = make_app();
+        app.keyboard_instrument = 0;
+        app.keyboard_instrument_prev();
+        assert_eq!(app.keyboard_instrument, 0, "should not underflow below 0");
+    }
+
+    #[test]
+    fn keyboard_instrument_next_clamps_at_255() {
+        let mut app = make_app();
+        app.keyboard_instrument = 255;
+        app.keyboard_instrument_next();
+        assert_eq!(app.keyboard_instrument, 255, "should not overflow above 255");
+    }
+
+    #[test]
+    fn keyboard_instrument_prev_decrements() {
+        let mut app = make_app();
+        app.keyboard_instrument = 5;
+        app.keyboard_instrument_prev();
+        assert_eq!(app.keyboard_instrument, 4);
+    }
+
+    #[test]
+    fn keyboard_instrument_next_increments() {
+        let mut app = make_app();
+        app.keyboard_instrument = 5;
+        app.keyboard_instrument_next();
+        assert_eq!(app.keyboard_instrument, 6);
+    }
+
+    #[test]
+    fn keyboard_instrument_persists_across_mode_entries() {
+        let mut app = make_app();
+        app.enter_keyboard_mode();
+        app.keyboard_instrument = 7;
+        app.exit_keyboard_mode();
+        app.enter_keyboard_mode();
+        assert_eq!(app.keyboard_instrument, 7);
     }
 }
 
