@@ -1952,7 +1952,9 @@ fn run_tui(
                             app.startup_cursor = (app.startup_cursor + 1) % 2;
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
-                            app.startup_cursor = (app.startup_cursor + 1) % 2;
+                            if app.startup_cursor > 0 {
+                                app.startup_cursor -= 1;
+                            }
                         }
                         KeyCode::Enter => match app.startup_cursor {
                             0 => {
