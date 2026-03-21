@@ -71,3 +71,11 @@ Summary: Added MixerTrack struct to Song (volume/pan/mute/solo/fx_send), persist
 ## Merged PR #23 — Mixer view with per-track vol/pan/mute/solo/FX send
 Fixes applied before merge: volume clamp 1.0→2.0 in trigger_with_fx; #[serde(default)] on Song::mixer for v2 JSON compat; 2 new tests.
 Downstream rebased: (none)
+
+## Iteration 4 — Sat 21 Mar 2026 10:25:13 UTC
+
+## Issue #11 — WAV export: full song mix + per-stem files
+Status: done
+Branch: ralph/issue-11
+PR: #24
+Summary: Added tracker-core::render module with offline render_to_buffer(); :export-mix and :export-stems colon commands run on a background thread with live progress in the status bar. Stereo 48 kHz f32 WAV via hound. 5 new tests; 81 total pass.

@@ -16,7 +16,7 @@ use rtrb::RingBuffer;
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
@@ -189,6 +189,10 @@ struct App {
     mixer_cursor_track: usize,
     /// Mixer view: active field row (0=VOL, 1=PAN, 2=MUTE, 3=SOLO, 4=SEND).
     mixer_cursor_field: usize,
+    /// Background WAV render thread (Some while render is in progress).
+    render_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
+    /// Render progress 0–100, written by the render thread, read by the TUI.
+    render_progress: Arc<AtomicU32>,
 }
 
 impl App {
@@ -231,6 +235,8 @@ impl App {
             fx_edit_buf: String::new(),
             mixer_cursor_track: 0,
             mixer_cursor_field: 0,
+            render_receiver: None,
+            render_progress: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -486,6 +492,12 @@ impl App {
                 Ok(_) => self.status = format!("JSON exported: {path}"),
                 Err(e) => self.status = format!("Error: {e}"),
             }
+        } else if let Some(path) = raw.strip_prefix("export-mix ") {
+            let path = path.trim().to_string();
+            self.start_render_mix(path);
+        } else if let Some(dir) = raw.strip_prefix("export-stems ") {
+            let dir = dir.trim().to_string();
+            self.start_render_stems(dir);
         } else if raw.is_empty() {
             self.status =
                 "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
@@ -493,9 +505,135 @@ impl App {
             self.status = format!("Unknown command: {raw}");
         }
     }
+
+    /// Spawn a background thread to render the full mix and write to `path`.
+    fn start_render_mix(&mut self, path: String) {
+        if self.render_receiver.is_some() {
+            self.status = "Error: render already in progress".to_string();
+            return;
+        }
+        let song = self.song.clone();
+        let progress = Arc::clone(&self.render_progress);
+        progress.store(0, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.render_receiver = Some(rx);
+        self.status = "Rendering mix... 0%".to_string();
+
+        std::thread::spawn(move || {
+            let buffers = load_all_instrument_samples(&song);
+            let result: anyhow::Result<String> = (|| {
+                let audio = tracker_core::render::render_to_buffer(
+                    &song,
+                    &buffers,
+                    None,
+                    &mut |p| {
+                        progress.store((p * 100.0) as u32, Ordering::Relaxed);
+                    },
+                );
+                write_wav(&path, &audio)?;
+                Ok(format!("Mix exported: {path}"))
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Spawn a background thread to render per-track stems into `dir`.
+    fn start_render_stems(&mut self, dir: String) {
+        if self.render_receiver.is_some() {
+            self.status = "Error: render already in progress".to_string();
+            return;
+        }
+        let song = self.song.clone();
+        let progress = Arc::clone(&self.render_progress);
+        progress.store(0, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.render_receiver = Some(rx);
+        self.status = "Rendering stems... 0%".to_string();
+
+        std::thread::spawn(move || {
+            let result: anyhow::Result<String> = (|| {
+                std::fs::create_dir_all(&dir)?;
+                let buffers = load_all_instrument_samples(&song);
+                for track in 0..TRACKS {
+                    let audio = tracker_core::render::render_to_buffer(
+                        &song,
+                        &buffers,
+                        Some(track),
+                        &mut |p| {
+                            // Scale progress across all TRACKS passes.
+                            let overall = (track as f32 + p) / TRACKS as f32;
+                            progress.store((overall * 100.0) as u32, Ordering::Relaxed);
+                        },
+                    );
+                    let filename = format!("{dir}/track-{:02}.wav", track + 1);
+                    write_wav(&filename, &audio)?;
+                }
+                Ok(format!("Stems exported to: {dir}"))
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Poll the render thread receiver; update status bar on completion or progress.
+    fn poll_render(&mut self) {
+        let result = match &self.render_receiver {
+            None => return,
+            Some(rx) => match rx.try_recv() {
+                Ok(r) => r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let pct = self.render_progress.load(Ordering::Relaxed);
+                    self.status = format!("Rendering... {pct}%");
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow::anyhow!("render thread disconnected unexpectedly"))
+                }
+            },
+        };
+        self.render_receiver = None;
+        match result {
+            Ok(msg) => self.status = msg,
+            Err(e) => self.status = format!("Export error: {e}"),
+        }
+    }
 }
 
-// ── WAV loading ───────────────────────────────────────────────────────────────
+// ── WAV export helpers ────────────────────────────────────────────────────────
+
+/// Write a stereo 48 kHz 32-bit float PCM WAV file.
+fn write_wav(path: &str, samples: &[f32]) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 48000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let file =
+        std::fs::File::create(path).with_context(|| format!("cannot create WAV: {path}"))?;
+    let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), spec)
+        .with_context(|| format!("cannot open WavWriter for: {path}"))?;
+    for &s in samples {
+        writer.write_sample(s)?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+/// Decode WAV files for all instruments in `song` into f32 buffers.
+/// Instruments without a sample path (or whose file cannot be loaded) get `None`.
+fn load_all_instrument_samples(
+    song: &Song,
+) -> Vec<Option<(Arc<Vec<f32>>, usize)>> {
+    song.instruments
+        .iter()
+        .map(|instr| {
+            instr
+                .sample
+                .as_ref()
+                .and_then(|s| load_wav(&s.path).ok())
+        })
+        .collect()
+}
 
 fn load_wav(path: &str) -> Result<(Arc<Vec<f32>>, usize)> {
     let mut reader =
@@ -1294,6 +1432,9 @@ fn run_tui(
     let mut app = App::new(producer, sample_root, seq_playing, current_seq_step);
 
     loop {
+        // Poll render thread for completion/progress before drawing.
+        app.poll_render();
+
         // ── Render ────────────────────────────────────────────────────────────
         terminal.draw(|frame| {
             let size = frame.area();
@@ -1340,7 +1481,11 @@ fn run_tui(
                 format!("■  Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
             };
 
-            let status_text = match app.view {
+            // When a render is in progress, override the status bar with progress.
+            let status_text = if app.render_receiver.is_some() {
+                app.status.clone()
+            } else {
+                match app.view {
                 View::SongView => format!(
                     "{transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row  F3: phrase  q: quit"
                 ),
@@ -1396,7 +1541,7 @@ fn run_tui(
                         "{transport}  |  MIXER  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo  Esc: back"
                     )
                 }
-            };
+            }};
             let status = Paragraph::new(status_text)
                 .style(Style::default().fg(Color::White).bg(Color::DarkGray));
             frame.render_widget(status, outer[1]);

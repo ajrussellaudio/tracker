@@ -560,6 +560,21 @@ impl Sequencer {
         self.playing = false;
     }
 
+    /// Returns a [`StepEvent`] for the current `step_index` without advancing.
+    ///
+    /// Used by the offline renderer to trigger the initial notes at step 0
+    /// before the first call to [`advance`].
+    pub fn current_step_notes(&self) -> StepEvent {
+        let si = self.step_index;
+        let notes = (0..TRACKS)
+            .filter_map(|t| {
+                self.resolve_track_speed(t, si)
+                    .map(|s| (t, s, self.resolve_track_fx(t, si)))
+            })
+            .collect();
+        StepEvent { step_index: si, notes }
+    }
+
     /// Advance the sequencer by `frames` audio samples.
     ///
     /// Returns one `StepEvent` for each step boundary crossed.  Each event
