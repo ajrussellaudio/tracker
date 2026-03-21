@@ -48,6 +48,10 @@ Branch: ralph/issue-8
 PR: #21
 Summary: Added SongView (8-col × N-row arrangement grid) and ChainView (phrase slots with semitone transpose). Sequencer extended to 8 independent tracks each tracking song_row/chain_slot; playback wraps to row 0 (loops). ChainSlot replaces Chain.phrases; Song gains arrangement field; CURRENT_VERSION bumped to 2. Screen navigation stack (push_view/pop_view) with Esc/Backspace pop-back and F1/F3/F4 hotkeys. 57 tests pass (6 new).
 
+## Merged PR #22 — FX slots with VOL/PAN/PIT/RET commands and 2D phrase cursor
+Fixes applied before merge: retriggers.clear() on Command::Stop; PIT FX speed tests added.
+Downstream rebased: (none)
+
 ## Iteration 2 — Sat 21 Mar 2026 09:47:04 GMT
 
 ## Issue #9 — FX slots: 4-column per-step automation
