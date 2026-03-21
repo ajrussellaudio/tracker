@@ -67,3 +67,7 @@ Status: done
 Branch: ralph/issue-10
 PR: #23
 Summary: Added MixerTrack struct to Song (volume/pan/mute/solo/fx_send), persisted via bincode/JSON. Four new Command variants drive immediate playback changes (mute silences track, solo silences others). View::Mixer screen (F2 to open) renders 8-track×5-field grid with Cyan cursor, red mute, yellow solo indicators. 74 tests pass (8 new).
+
+## Merged PR #23 — Mixer view with per-track vol/pan/mute/solo/FX send
+Fixes applied before merge: volume clamp 1.0→2.0 in trigger_with_fx; #[serde(default)] on Song::mixer for v2 JSON compat; 2 new tests.
+Downstream rebased: (none)
