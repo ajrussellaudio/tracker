@@ -28,3 +28,11 @@ Status: done
 Branch: ralph/issue-6
 PR: #19
 Summary: Added Sequencer struct to tracker-core::audio with tick_counter-driven step advancement (never wall-clock). Swing applies an alternating duration offset to odd steps. Space/F5 transport controls, left/right arrows adjust BPM live, status bar shows ▶/■ step and BPM. 6 new sequencer tests verify 2-second timing, zero drift over 100 bars, 50% swing offset, empty step silence, live BPM change, and stopped-sequencer no-events. Total: 34 tests pass.
+
+## Iteration 7 — Sat 21 Mar 2026 03:30:00 GMT
+
+## Issue #7 — Instrument editor + sample browser + loop points + interpolation
+Status: done
+Branch: ralph/issue-7
+PR: #20
+Summary: Added instrument editor view (Tab to open, hjkl navigate 8 fields, h/l adjust values, i edits text). Sample browser lists .wav files from cwd with hjkl+Enter selection. Voice gains loop_start/loop_end (infinite sustain when loop_end > loop_start, one-shot otherwise) and interp_mode (None=nearest, Linear=lerp, Sinc=Hermite cubic). New Commands: LoadVoice, SetLoopPoints, SetInterpMode handled by audio thread. All instrument fields persist via :w/:e. 17 new tests; 51 total.
