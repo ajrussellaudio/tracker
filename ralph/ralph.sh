@@ -19,7 +19,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 PROMPT_FILE="$SCRIPT_DIR/prompt.md"
-PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
 WORKTREE_DIR="${GIT_ROOT%/*}/$(basename "$GIT_ROOT")-ralph-workspace"
 
 # ── Argument validation ────────────────────────────────────────────────────────
@@ -48,16 +47,6 @@ fi
 if [[ ! -f "$PROMPT_FILE" ]]; then
   echo "Error: Prompt file not found at $PROMPT_FILE"
   exit 1
-fi
-
-# ── Initialise progress log ────────────────────────────────────────────────────
-
-if [[ ! -f "$PROGRESS_FILE" ]]; then
-  {
-    echo "# Ralph Progress Log"
-    echo "Started: $(date)"
-    echo "---"
-  } > "$PROGRESS_FILE"
 fi
 
 # ── Worktree setup ─────────────────────────────────────────────────────────────
@@ -100,11 +89,6 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   echo "  Iteration $i / $MAX_ITERATIONS"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  {
-    echo ""
-    echo "## Iteration $i — $(date)"
-  } >> "$PROGRESS_FILE"
-
   # Run Copilot inside the worktree so it sees that directory as the repo root.
   # Output is streamed live to the terminal and also captured for signal detection.
   PROMPT="$(cat "$PROMPT_FILE")"
@@ -122,11 +106,6 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  ✅  Ralph completed all tasks at iteration $i / $MAX_ITERATIONS"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    {
-      echo ""
-      echo "## COMPLETE — $(date)"
-      echo "All tasks finished at iteration $i."
-    } >> "$PROGRESS_FILE"
     exit 0
   fi
 
@@ -144,12 +123,6 @@ echo "       receiving a completion signal."
 echo ""
 echo "  Options:"
 echo "    • Run again with more iterations to continue"
-echo "    • Check ralph/progress.txt for a summary of what was done"
 echo "    • Tune ralph/prompt.md if Copilot is going in the wrong direction"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-{
-  echo ""
-  echo "## STOPPED — $(date)"
-  echo "Reached max iterations ($MAX_ITERATIONS) without completion signal."
-} >> "$PROGRESS_FILE"
 exit 1
