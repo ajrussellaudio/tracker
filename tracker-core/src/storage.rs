@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bincode::Options;
 use std::collections::HashMap;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 
 use crate::model::{PackedSong, Song};
 
@@ -26,11 +26,14 @@ pub fn save_trk(song: &Song, path: &str) -> Result<()> {
 ///
 /// Returns an error if the file is missing, unreadable, or corrupt.
 pub fn load_trk(path: &str) -> Result<Song> {
-    if is_packed_file(path)? {
-        return load_packed_trk_inner(path);
-    }
     let file = std::fs::File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+    let mut magic = [0u8; 4];
+    let is_packed = reader.read_exact(&mut magic).is_ok() && &magic == PACKED_MAGIC;
+    if is_packed {
+        return load_packed_from_reader(reader);
+    }
+    reader.seek(std::io::SeekFrom::Start(0))?;
     // Cap allocation to 64 MiB to reject corrupt length-prefix attacks.
     let song: Song = bincode::options()
         .with_limit(64 * 1024 * 1024)
@@ -72,29 +75,14 @@ pub fn save_packed_trk(song: &Song, path: &str) -> Result<Vec<String>> {
     bincode::options()
         .with_limit(256 * 1024 * 1024)
         .serialize_into(&mut writer, &packed)?;
+    writer.flush()?;
 
     Ok(failed)
 }
 
-/// Returns `true` if the file at `path` begins with the packed-file magic bytes.
-fn is_packed_file(path: &str) -> Result<bool> {
-    let mut file = std::fs::File::open(path)?;
-    let mut magic = [0u8; 4];
-    if file.read_exact(&mut magic).is_err() {
-        return Ok(false);
-    }
-    Ok(&magic == PACKED_MAGIC)
-}
-
-/// Deserialise a packed `.trk` file and repopulate `sample.bytes` for every
-/// embedded instrument so the caller can play audio without reading from disk.
-fn load_packed_trk_inner(path: &str) -> Result<Song> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::new(file);
-    // Skip the 4-byte magic we already verified.
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-
+/// Deserialise a packed `.trk` file from a reader already positioned past the
+/// magic bytes, and repopulate `sample.bytes` for every embedded instrument.
+fn load_packed_from_reader(reader: BufReader<std::fs::File>) -> Result<Song> {
     let packed: PackedSong = bincode::options()
         .with_limit(256 * 1024 * 1024)
         .deserialize_from(reader)?;
