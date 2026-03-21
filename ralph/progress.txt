@@ -5,3 +5,9 @@ Created: initial
 (No iterations run yet.)
 
 ## Iteration 1 — Sat 21 Mar 2026 02:46:52 GMT
+
+## Issue #2 — Workspace scaffold + TUI shell + silent audio
+Status: done
+Branch: ralph/issue-2
+PR: #15
+Summary: Created Cargo workspace with tracker-core (lib) and tracker (bin) crates. Implemented ratatui+crossterm TUI shell, cpal silence stream at 48kHz/f32 stereo, clean exit on q, and GitHub Actions CI.
