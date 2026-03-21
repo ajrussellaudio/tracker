@@ -79,3 +79,7 @@ Status: done
 Branch: ralph/issue-11
 PR: #24
 Summary: Added tracker-core::render module with offline render_to_buffer(); :export-mix and :export-stems colon commands run on a background thread with live progress in the status bar. Stereo 48 kHz f32 WAV via hound. 5 new tests; 81 total pass.
+
+## Iteration 5 — Sat 21 Mar 2026 11:28:00 UTC
+
+PR #26 review round 2: found genuine bug (spurious record() call before arrangement clear guard in song view). Posted REQUEST_CHANGES (round 2). PR #26 has now hit the review cap — next iteration will force-approve.
