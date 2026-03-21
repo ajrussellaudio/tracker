@@ -72,6 +72,16 @@ Summary: Added MixerTrack struct to Song (volume/pan/mute/solo/fx_send), persist
 Fixes applied before merge: volume clamp 1.0→2.0 in trigger_with_fx; #[serde(default)] on Song::mixer for v2 JSON compat; 2 new tests.
 Downstream rebased: (none)
 
+## Merged PR #24 — WAV export — offline renderer with :export-mix and :export-stems
+Fixes applied before merge: steps_seen initialised to 1 to avoid double-triggering step 0; regression test step_0_fires_exactly_once_per_phrase_cycle added. All 82 tests pass.
+Downstream rebased: (none)
+
+## Issue #12 — Undo/redo stack
+Status: done
+Branch: ralph/issue-12
+PR: #26
+Summary: Snapshot-based undo/redo (u / Ctrl+R) covering all mutation sites across all views. History capped at 1000, cleared on :e. 2-second timed status bar messages. 4 new tests; 86 total.
+
 ## Iteration 4 — Sat 21 Mar 2026 10:25:13 UTC
 
 ## Issue #11 — WAV export: full song mix + per-stem files

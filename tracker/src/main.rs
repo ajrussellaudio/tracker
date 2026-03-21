@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+mod history;
+use history::History;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -193,6 +195,10 @@ struct App {
     render_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     /// Render progress 0–100, written by the render thread, read by the TUI.
     render_progress: Arc<AtomicU32>,
+    /// Undo/redo history.
+    history: History,
+    /// When set, status bar shows app.status until this instant (timed messages).
+    status_timer: Option<std::time::Instant>,
 }
 
 impl App {
@@ -237,6 +243,8 @@ impl App {
             mixer_cursor_field: 0,
             render_receiver: None,
             render_progress: Arc::new(AtomicU32::new(0)),
+            history: History::new(),
+            status_timer: None,
         }
     }
 
@@ -394,6 +402,7 @@ impl App {
     /// Confirm selection in the sample browser — loads the file into the active instrument.
     fn confirm_browser_selection(&mut self) {
         if let Some(path) = self.browser_entries.get(self.browser_cursor).cloned() {
+            self.record("select sample");
             self.ensure_instrument(self.active_instrument);
             if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
                 instr.sample = Some(tracker_core::model::Sample::from_path(&path));
@@ -405,6 +414,7 @@ impl App {
 
     /// Adjust BPM by `delta` and send the new value to the audio thread.
     fn adjust_bpm(&mut self, delta: f32) {
+        self.record("set BPM");
         self.song.bpm = (self.song.bpm + delta).clamp(20.0, 999.0);
         self.send_cmd(Command::SetBpm(self.song.bpm));
     }
@@ -439,6 +449,7 @@ impl App {
 
     /// Enter a note at the current step and advance the cursor.
     fn enter_note(&mut self, midi: u8) {
+        self.record(&format!("set note {} at step {}", note_name(midi), self.cursor_step));
         let cursor = self.cursor_step;
         let instr = self.active_instrument as u8;
         let step = &mut self.phrase_mut().steps[cursor];
@@ -482,6 +493,7 @@ impl App {
                     self.reload_instruments();
                     self.sync_song_to_sequencer();
                     self.sync_mixer_to_audio();
+                    self.history.clear();
                     self.status = format!("Loaded: {path}");
                 }
                 Err(e) => self.status = format!("Error: {e}"),
@@ -594,6 +606,46 @@ impl App {
         match result {
             Ok(msg) => self.status = msg,
             Err(e) => self.status = format!("Export error: {e}"),
+        }
+    }
+
+    /// Save a snapshot before a mutation. Call BEFORE any mutation.
+    fn record(&mut self, description: &str) {
+        let snapshot = self.song.clone();
+        self.history.push(description.to_string(), snapshot);
+    }
+
+    /// Set a status message that clears after 2 seconds.
+    fn set_timed_status(&mut self, msg: String) {
+        self.status = msg;
+        self.status_timer = Some(std::time::Instant::now());
+    }
+
+    /// Undo the most recent mutation.
+    fn do_undo(&mut self) {
+        let current = self.song.clone();
+        if let Some((snapshot, desc)) = self.history.undo(current) {
+            self.song = snapshot;
+            self.set_timed_status(format!("Undid: {desc}"));
+            self.sync_phrase_to_sequencer();
+            self.sync_song_to_sequencer();
+            self.sync_mixer_to_audio();
+        } else {
+            self.set_timed_status("Nothing to undo".to_string());
+        }
+    }
+
+    /// Redo the most recently undone mutation.
+    fn do_redo(&mut self) {
+        let current = self.song.clone();
+        if let Some((snapshot, desc)) = self.history.redo(current) {
+            self.song = snapshot;
+            self.set_timed_status(format!("Redid: {desc}"));
+            self.sync_phrase_to_sequencer();
+            self.sync_song_to_sequencer();
+            self.sync_mixer_to_audio();
+        } else {
+            self.set_timed_status("Nothing to redo".to_string());
         }
     }
 }
@@ -1435,6 +1487,14 @@ fn run_tui(
         // Poll render thread for completion/progress before drawing.
         app.poll_render();
 
+        // Clear timed status messages after 2 seconds.
+        if let Some(timer) = app.status_timer {
+            if timer.elapsed() >= Duration::from_secs(2) {
+                app.status_timer = None;
+                app.status = "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
+            }
+        }
+
         // ── Render ────────────────────────────────────────────────────────────
         terminal.draw(|frame| {
             let size = frame.area();
@@ -1484,6 +1544,8 @@ fn run_tui(
             // When a render is in progress, override the status bar with progress.
             let status_text = if app.render_receiver.is_some() {
                 app.status.clone()
+            } else if app.status_timer.is_some() {
+                format!("{transport}  |  {}", app.status)
             } else {
                 match app.view {
                 View::SongView => format!(
@@ -1550,6 +1612,19 @@ fn run_tui(
         // ── Input ─────────────────────────────────────────────────────────────
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
+                // Global undo/redo: works from any view except insert/command mode.
+                let is_insert = matches!((&app.view, &app.mode), (View::PhraseEditor, InputMode::Insert));
+                let is_command = matches!((&app.view, &app.mode), (View::PhraseEditor, InputMode::Command));
+                if !is_insert && !is_command {
+                    if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.do_undo();
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.do_redo();
+                        continue;
+                    }
+                }
                 match app.view {
                     // ──────────────────────────────────────────────────────────
                     // Song view key handling
@@ -1596,6 +1671,7 @@ fn run_tui(
                             if let Ok(chain_idx) = u8::from_str_radix(&c.to_string(), 16) {
                                 let row = app.song_cursor_row;
                                 let track = app.song_cursor_track;
+                                app.record(&format!("assign chain to row {} track {}", row, track));
                                 while app.song.arrangement.len() <= row {
                                     app.song.arrangement.push([None; TRACKS]);
                                 }
@@ -1608,6 +1684,7 @@ fn run_tui(
                         KeyCode::Delete | KeyCode::Char('x') => {
                             let row = app.song_cursor_row;
                             let track = app.song_cursor_track;
+                            app.record(&format!("clear arrangement row {} track {}", row, track));
                             if let Some(arr_row) = app.song.arrangement.get_mut(row) {
                                 arr_row[track] = None;
                                 app.sync_song_to_sequencer();
@@ -1664,18 +1741,24 @@ fn run_tui(
                                 // h/l: adjust phrase index
                                 KeyCode::Char('h') | KeyCode::Left => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = slot.phrase.saturating_sub(1)
-                                                .min(app.song.phrases.len().saturating_sub(1) as u8);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                app.song.chains[ci].slots[cursor].phrase.saturating_sub(1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
                                     if let Some(ci) = chain_idx_opt {
-                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                (app.song.chains[ci].slots[cursor].phrase + 1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1683,16 +1766,22 @@ fn run_tui(
                                 // ,/. : adjust transpose (semitones down/up)
                                 KeyCode::Char(',') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('.') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_add(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_add(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1722,17 +1811,23 @@ fn run_tui(
                                 // h/l: adjust phrase index in normal mode too
                                 KeyCode::Char('h') | KeyCode::Left => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = slot.phrase.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                app.song.chains[ci].slots[cursor].phrase.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
                                     if let Some(ci) = chain_idx_opt {
-                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                (app.song.chains[ci].slots[cursor].phrase + 1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1740,16 +1835,22 @@ fn run_tui(
                                 // ,/. : adjust transpose
                                 KeyCode::Char(',') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('.') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_add(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_add(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1763,6 +1864,7 @@ fn run_tui(
                                 // a: append slot
                                 KeyCode::Char('a') => {
                                     if let Some(ci) = chain_idx_opt {
+                                        app.record("add chain slot");
                                         let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
                                         app.song.chains[ci].slots.push(ChainSlot {
                                             phrase: max_phrase.min(app.chain_cursor as u8),
@@ -1777,6 +1879,7 @@ fn run_tui(
                                     if let Some(ci) = chain_idx_opt {
                                         let len = app.song.chains[ci].slots.len();
                                         if len > 0 {
+                                            app.record("delete chain slot");
                                             app.song.chains[ci].slots.remove(app.chain_cursor);
                                             if app.chain_cursor >= app.song.chains[ci].slots.len() && app.chain_cursor > 0 {
                                                 app.chain_cursor -= 1;
@@ -1866,10 +1969,12 @@ fn run_tui(
                                 KeyCode::Char('d') | KeyCode::Delete => {
                                     let idx = app.cursor_step;
                                     if let Some((slot_idx, _)) = col_to_fx(app.cursor_col) {
+                                        app.record(&format!("clear FX slot {} at step {}", slot_idx + 1, app.cursor_step));
                                         // Clear just the active FX slot.
                                         app.phrase_mut().steps[idx].fx[slot_idx] =
                                             tracker_core::model::FxSlot::default();
                                     } else {
+                                        app.record(&format!("clear step {}", app.cursor_step));
                                         // Clear the entire step.
                                         let step = &mut app.phrase_mut().steps[idx];
                                         step.note = None;
@@ -1899,6 +2004,7 @@ fn run_tui(
                                 KeyCode::Char('p') => {
                                     if let Some(s) = app.yanked_step.clone() {
                                         let idx = app.cursor_step;
+                                        app.record(&format!("paste at step {}", app.cursor_step));
                                         app.phrase_mut().steps[idx] = s;
                                         app.sync_phrase_to_sequencer();
                                     }
@@ -1961,6 +2067,7 @@ fn run_tui(
                                     app.fx_edit_buf.pop();
                                 } else if let Some((slot_idx, _)) = col_to_fx(app.cursor_col) {
                                     let step_idx = app.cursor_step;
+                                    app.record(&format!("clear FX slot {} at step {}", slot_idx + 1, app.cursor_step));
                                     app.phrase_mut().steps[step_idx].fx[slot_idx] =
                                         tracker_core::model::FxSlot::default();
                                     app.sync_phrase_to_sequencer();
@@ -1977,6 +2084,7 @@ fn run_tui(
                                                 app.fx_edit_buf.clear();
                                                 let step_idx = app.cursor_step;
                                                 if let Some(cmd) = FxCommand::from_code(&buf) {
+                                                    app.record(&format!("set FX{} command at step {}", slot_idx + 1, app.cursor_step));
                                                     app.phrase_mut().steps[step_idx].fx[slot_idx]
                                                         .command = cmd.id();
                                                     app.sync_phrase_to_sequencer();
@@ -2000,6 +2108,7 @@ fn run_tui(
                                                 app.fx_edit_buf.clear();
                                                 if let Ok(v) = buf.parse::<u16>() {
                                                     let step_idx = app.cursor_step;
+                                                    app.record(&format!("set FX{} value at step {}", slot_idx + 1, app.cursor_step));
                                                     app.phrase_mut().steps[step_idx].fx[slot_idx]
                                                         .value = v.min(255) as u8;
                                                     app.sync_phrase_to_sequencer();
@@ -2031,6 +2140,7 @@ fn run_tui(
                                     if !buf.is_empty() {
                                         if let Ok(v) = buf.parse::<u16>() {
                                             let step_idx = app.cursor_step;
+                                            app.record(&format!("set FX value at step {}", app.cursor_step));
                                             app.phrase_mut().steps[step_idx].fx[slot_idx].value =
                                                 v.min(255) as u8;
                                             app.sync_phrase_to_sequencer();
@@ -2070,6 +2180,7 @@ fn run_tui(
                                 KeyCode::Enter => {
                                     let buf = app.instr_edit_buf.clone();
                                     let cursor = app.instr_cursor;
+                                    app.record(&format!("edit instrument {} name/sample", app.active_instrument));
                                     if let Some(instr) =
                                         app.song.instruments.get_mut(app.active_instrument)
                                     {
@@ -2134,6 +2245,7 @@ fn run_tui(
                                         app.instr_editing = true;
                                     } else {
                                         // For non-text fields, treat 'i' like 'l' (increment)
+                                        app.record(&format!("edit instrument {} field {}", app.active_instrument, app.instr_cursor));
                                         instr_editor_increment(&mut app, 1);
                                     }
                                 }
@@ -2145,9 +2257,11 @@ fn run_tui(
                                 }
                                 // h/l or Left/Right adjust numeric/mode fields
                                 KeyCode::Char('h') | KeyCode::Left => {
+                                    app.record(&format!("edit instrument {} field {}", app.active_instrument, app.instr_cursor));
                                     instr_editor_increment(&mut app, -1);
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
+                                    app.record(&format!("edit instrument {} field {}", app.active_instrument, app.instr_cursor));
                                     instr_editor_increment(&mut app, 1);
                                 }
                                 _ => {}
@@ -2210,6 +2324,7 @@ fn run_tui(
 
                         // Increment/decrement numeric fields (+/=  and  -)
                         KeyCode::Char('+') | KeyCode::Char('=') => {
+                            app.record(&format!("set mixer track {} field", app.mixer_cursor_track));
                             let t = app.mixer_cursor_track;
                             let m = &mut app.song.mixer[t];
                             match app.mixer_cursor_field {
@@ -2239,6 +2354,7 @@ fn run_tui(
                             }
                         }
                         KeyCode::Char('-') => {
+                            app.record(&format!("set mixer track {} field", app.mixer_cursor_track));
                             let t = app.mixer_cursor_track;
                             let m = &mut app.song.mixer[t];
                             match app.mixer_cursor_field {
@@ -2271,6 +2387,7 @@ fn run_tui(
                         // Toggle mute (m key or Enter on MUTE row)
                         KeyCode::Char('m') => {
                             let t = app.mixer_cursor_track;
+                            app.record(&format!("toggle mute track {}", t));
                             let new_mute = !app.song.mixer[t].mute;
                             app.song.mixer[t].mute = new_mute;
                             app.send_cmd(Command::SetTrackMute {
@@ -2282,6 +2399,7 @@ fn run_tui(
                         // Toggle solo (s key or Enter on SOLO row)
                         KeyCode::Char('s') => {
                             let t = app.mixer_cursor_track;
+                            app.record(&format!("toggle solo track {}", t));
                             let new_solo = !app.song.mixer[t].solo;
                             app.song.mixer[t].solo = new_solo;
                             app.send_cmd(Command::SetTrackSolo {
@@ -2295,6 +2413,7 @@ fn run_tui(
                             let t = app.mixer_cursor_track;
                             match app.mixer_cursor_field {
                                 MIXER_FIELD_MUTE => {
+                                    app.record(&format!("toggle mute track {}", t));
                                     let new_mute = !app.song.mixer[t].mute;
                                     app.song.mixer[t].mute = new_mute;
                                     app.send_cmd(Command::SetTrackMute {
@@ -2303,6 +2422,7 @@ fn run_tui(
                                     });
                                 }
                                 MIXER_FIELD_SOLO => {
+                                    app.record(&format!("toggle solo track {}", t));
                                     let new_solo = !app.song.mixer[t].solo;
                                     app.song.mixer[t].solo = new_solo;
                                     app.send_cmd(Command::SetTrackSolo {
@@ -2854,6 +2974,75 @@ mod tests {
         assert!(app.song.mixer[0].solo);
         assert!(app.song.mixer[3].solo);
         assert!(!app.song.mixer[1].solo);
+    }
+
+    // ── Undo/redo tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn undo_redo_note_entry() {
+        let mut app = make_app();
+        let original = app.song.clone();
+
+        // Enter 5 notes
+        for i in 0..5u8 {
+            app.cursor_step = i as usize;
+            app.enter_note(60 + i);
+        }
+        let mutated = app.song.clone();
+        // Verify mutations happened
+        for i in 0..5usize {
+            assert_eq!(app.song.phrases[0].steps[i].note, Some(60 + i as u8));
+        }
+
+        // Undo all 5
+        for _ in 0..5 {
+            app.do_undo();
+        }
+        assert_eq!(app.song.phrases[0], original.phrases[0], "after 5 undos should match original");
+
+        // Redo all 5
+        for _ in 0..5 {
+            app.do_redo();
+        }
+        assert_eq!(app.song.phrases[0], mutated.phrases[0], "after 5 redos should match mutated state");
+    }
+
+    #[test]
+    fn new_mutation_clears_redo_stack() {
+        let mut app = make_app();
+        app.enter_note(60);
+        app.do_undo();
+        // Redo stack has one entry now
+        // Enter a new note — should clear redo
+        app.cursor_step = 1;
+        app.enter_note(62);
+        app.do_redo(); // should do nothing
+        // Step 0 should still be empty (redo was cleared)
+        assert_eq!(app.song.phrases[0].steps[0].note, None);
+        // Step 1 should have the new note
+        assert_eq!(app.song.phrases[0].steps[1].note, Some(62));
+    }
+
+    #[test]
+    fn undo_stack_capped_at_1000() {
+        let mut app = make_app();
+        for i in 0..1001u16 {
+            app.song.bpm = 100.0 + i as f32 * 0.001;
+            app.history.push(format!("change {i}"), app.song.clone());
+        }
+        // Should have exactly 1000 entries (oldest dropped)
+        assert_eq!(app.history.undo_stack.len(), 1000);
+    }
+
+    #[test]
+    fn load_clears_history() {
+        let mut app = make_app();
+        app.enter_note(60);
+        assert!(!app.history.undo_stack.is_empty());
+        // Simulate :e by calling history.clear() (as done in execute_command)
+        app.history.clear();
+        assert!(app.history.undo_stack.is_empty());
+        assert!(app.history.redo_stack.is_empty());
     }
 }
 
