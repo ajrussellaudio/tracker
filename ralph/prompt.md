@@ -14,7 +14,6 @@ Before doing anything else, make sure the workspace is up to date:
 
 Use sub-agents for the following orientation tasks so you don't burn your primary context window:
 
-- Read `ralph/progress.txt` to see what previous iterations have done.
 - Run `git log --oneline -20` to see recent commits.
 - Use the GitHub MCP tools to list all open issues in `ajrussellaudio/tracker`, excluding issue #1 (the PRD, which stays open permanently).
 
@@ -143,7 +142,7 @@ PR `#<N>` has already had two rounds of review and fixes. Approve it uncondition
 
    — Ralph 🤖
    ```
-2. Log in `ralph/progress.txt`: `"PR #<N> approved after max review rounds."`
+2. Log in a PR comment: `"PR #<N> — approved after max review rounds."` (no need to write to any file)
 3. Proceed immediately to **[Merge Mode](#merge-mode)**.
 
 ---
@@ -169,19 +168,8 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase a
      ```
    - If the rebase succeeds and `cargo test` passes: `git push --force-with-lease origin ralph/issue-<M>`
    - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run `cargo test` to verify. If tests pass, continue the rebase and push.
-   - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, append to `ralph/progress.txt`:
-     ```
-     ⚠️  Downstream rebase for ralph/issue-<M> needs human attention.
-     Conflict in: <file(s)>
-     Description: <what the conflict is about>
-     ```
-     and stop.
-4. Append to `ralph/progress.txt`:
-   ```
-   ## Merged PR #<N> — <title>
-   Downstream rebased: ralph/issue-<M>, ...
-   ```
-5. Stop here. The next iteration will process the next open PR or implement a new issue.
+   - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
+4. Stop here. The next iteration will process the next open PR or implement a new issue.
 
 ---
 
@@ -205,7 +193,6 @@ cargo test
 
 If either check fails and you cannot fix it after a genuine effort, **do not open a PR**. Instead:
 - Revert any broken changes (`git checkout -- .` or `git stash`)
-- Note what you attempted and why it failed in `ralph/progress.txt`
 - Move on to Step 5 and treat this issue as skipped
 
 ### Step 5 — Commit and open a PR
@@ -219,17 +206,9 @@ If the checks passed:
   - Note any limitations or known rough edges
 - Do **not** close the GitHub issue manually — it will be closed automatically when the PR is merged.
 
-### Step 6 — Update the progress log
+### Step 6 — Stop
 
-Append a brief entry to `ralph/progress.txt` and commit it:
-
-```
-## Issue #<N> — <title>
-Status: done / skipped
-Branch: ralph/issue-<N>
-PR: #<PR number> (or N/A if skipped)
-Summary: <one or two sentences>
-```
+Open a PR and stop. The loop will restart and enter Review Mode next iteration.
 
 ---
 
