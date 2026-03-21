@@ -1,0 +1,3 @@
+[workspace]
+members = ["tracker-core", "tracker"]
+resolver = "2"

@@ -1,0 +1,15 @@
+[package]
+name = "tracker"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tracker"
+path = "src/main.rs"
+
+[dependencies]
+tracker-core = { path = "../tracker-core" }
+anyhow = "1.0"
+ratatui = "0.29"
+crossterm = "0.28"
+cpal = "0.15"
