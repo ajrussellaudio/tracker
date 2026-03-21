@@ -12,7 +12,13 @@ Use sub-agents for the following orientation tasks so you don't burn your primar
 
 ## Step 2 — Pick one issue
 
-Choose the **single most important** open issue that is not blocked by incomplete work. Use your own judgement. Do not ask. Do not pick more than one.
+- List all open issues (excluding #1) using the GitHub MCP tools.
+- List all open PRs to find which issues already have a `ralph/issue-<N>` branch with an open PR.
+- Choose the **single most important** open issue that:
+  - is not blocked by incomplete work, and
+  - does **not** already have an open PR.
+- Use your own judgement. Do not ask. Do not pick more than one.
+- If every open issue (excluding #1) already has an open PR, skip to Step 7 immediately.
 
 ## Step 3 — Implement it
 
@@ -44,7 +50,7 @@ If the checks passed:
   - Reference the issue with `Closes #<N>`
   - Summarise what was implemented
   - Note any limitations or known rough edges
-- Close the GitHub issue (the human will review and merge the PR separately).
+- Do **not** close the GitHub issue manually — it will be closed automatically when the PR is merged.
 
 ## Step 6 — Update the progress log
 
@@ -60,9 +66,10 @@ Summary: <one or two sentences>
 
 ## Step 7 — Decide what comes next
 
-Check whether any issues (other than #1) remain open.
+- List all open issues (excluding #1) using the GitHub MCP tools.
+- List all open PRs to see which issues already have a `ralph/issue-<N>` PR in flight.
 
-- **If all issues are closed:** emit this token on a line by itself and stop:
+- **If every open issue (excluding #1) either is already closed or has an open PR:** emit this token on a line by itself and stop:
 
   <promise>COMPLETE</promise>
 
