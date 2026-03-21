@@ -24,19 +24,19 @@ Use GitHub MCP tools to list all open PRs with branches named `ralph/issue-*`.
 
 ### If there are open ralph PRs
 
-Find the **lowest-numbered** open ralph PR and inspect it. Use the GitHub MCP tools to:
-- Count how many `REQUEST_CHANGES` reviews it already has.
-- Check whether any commits have been pushed **after** the most recent `REQUEST_CHANGES` review (if any).
+Find the **lowest-numbered** open ralph PR and inspect it. Use `gh pr view <N> --comments` or the GitHub MCP tools to read its comment timeline.
+
+Look for comments containing the marker `<!-- RALPH-REVIEW: ... -->`. Count how many `REQUEST_CHANGES` markers exist, and check whether any commits have been pushed **after** the most recent one (if any).
 
 Choose a mode based on this table:
 
 | PR state | Mode |
 |---|---|
-| No reviews yet | → **[Review Mode](#review-mode)** |
-| `REQUEST_CHANGES` exists, no new commits since | → **[Fix Mode](#fix-mode)** |
-| `REQUEST_CHANGES` round 1, new commits exist | → **[Review Mode round 2](#review-mode)** |
-| `REQUEST_CHANGES` round 2, new commits exist | → **[Force-Approve Mode](#force-approve-mode)** |
-| `APPROVED`, not yet merged | → **[Merge Mode](#merge-mode)** |
+| No `RALPH-REVIEW` comments yet | → **[Review Mode](#review-mode)** |
+| `REQUEST_CHANGES` comment exists, no new commits since | → **[Fix Mode](#fix-mode)** |
+| `REQUEST_CHANGES` comment (round 1), new commits exist | → **[Review Mode round 2](#review-mode)** |
+| Two `REQUEST_CHANGES` comments, new commits exist | → **[Force-Approve Mode](#force-approve-mode)** |
+| `APPROVED` comment exists | → **[Merge Mode](#merge-mode)** |
 
 ### If there are no open ralph PRs
 
@@ -63,32 +63,47 @@ Launch a **general-purpose sub-agent** with this prompt:
 > For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
 > If you find no genuine issues, return exactly the word: LGTM"
 
-Based on the sub-agent's response:
+Based on the sub-agent's response, post a PR comment using `gh pr comment <N> --body "..."`.
 
 **If LGTM, or if this is round 2 and there are no genuine bugs:**
-- Submit an Approve review: `gh pr review <N> --approve --body "LGTM"`
-- Immediately proceed to **[Merge Mode](#merge-mode)**.
+
+Post this comment:
+```
+<!-- RALPH-REVIEW: APPROVED -->
+
+LGTM — no blocking issues found. ✅
+
+— Ralph 🤖
+```
+Then immediately proceed to **[Merge Mode](#merge-mode)**.
 
 **If issues found (round 1):**
-- Submit a Request Changes review listing each issue specifically:
-  ```bash
-  gh pr review <N> --request-changes --body "<list of issues>"
-  ```
-- Stop here. The next iteration will enter Fix Mode.
+
+Post this comment:
+```
+<!-- RALPH-REVIEW: REQUEST_CHANGES -->
+
+The following issues need addressing before this can merge:
+
+1. **`path/to/file.rs` ~line N** — Description of the problem.
+   Suggested fix: ...
+
+— Ralph 🤖
+```
+Stop here. The next iteration will enter Fix Mode.
 
 **If issues found (round 2):**
 - Even if genuine bugs are found, this is the last review round.
-- If the issues are genuine bugs: submit one final REQUEST_CHANGES, note in `ralph/progress.txt` that this PR has hit the review cap. The *next* check will force-approve regardless.
-- If the issues are minor: approve anyway with a note: `gh pr review <N> --approve --body "Approving after two review rounds. Minor concerns: <list>"`
-- Stop here (unless you approved, in which case proceed to Merge Mode).
+- If the issues are genuine bugs: post a final `REQUEST_CHANGES` comment and note in `ralph/progress.txt` that this PR has hit the review cap. The *next* check will force-approve regardless.
+- If the issues are minor: post an `APPROVED` comment with a note of the minor concerns. Proceed to Merge Mode.
 
 ---
 
 ## Fix Mode
 
-PR `#<N>` has `REQUEST_CHANGES` review comments that need addressing.
+PR `#<N>` has a `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` comment that needs addressing.
 
-1. Use GitHub MCP tools to read the review comments on the PR.
+1. Use `gh pr view <N> --comments` or GitHub MCP tools to read the REQUEST_CHANGES comment.
 2. Check out the PR branch: `git checkout ralph/issue-<N>`
 3. Implement the requested changes. Delegate large file reads to sub-agents.
 4. Run `cargo test` using a sub-agent. Fix any failures.
@@ -102,7 +117,14 @@ PR `#<N>` has `REQUEST_CHANGES` review comments that need addressing.
 
 PR `#<N>` has already had two rounds of review and fixes. Approve it unconditionally.
 
-1. `gh pr review <N> --approve --body "Approving after reaching review round cap."`
+1. Post this comment:
+   ```
+   <!-- RALPH-REVIEW: APPROVED -->
+
+   Approving after reaching the review round cap. ✅
+
+   — Ralph 🤖
+   ```
 2. Log in `ralph/progress.txt`: `"PR #<N> approved after max review rounds."`
 3. Proceed immediately to **[Merge Mode](#merge-mode)**.
 
@@ -110,7 +132,7 @@ PR `#<N>` has already had two rounds of review and fixes. Approve it uncondition
 
 ## Merge Mode
 
-PR `#<N>` is approved. Merge it and rebase all downstream branches.
+PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase all downstream branches.
 
 1. Merge using a merge commit (never squash — this preserves SHAs for the downstream chain):
    ```bash
