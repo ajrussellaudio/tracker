@@ -825,6 +825,26 @@ impl App {
             self.set_timed_status("Nothing to redo".to_string());
         }
     }
+
+    fn enter_keyboard_mode(&mut self) {
+        self.mode = InputMode::Keyboard;
+    }
+
+    fn exit_keyboard_mode(&mut self) {
+        self.mode = InputMode::Normal;
+    }
+
+    fn keyboard_instrument_prev(&mut self) {
+        if self.keyboard_instrument > 0 {
+            self.keyboard_instrument -= 1;
+        }
+    }
+
+    fn keyboard_instrument_next(&mut self) {
+        if self.keyboard_instrument < 255 {
+            self.keyboard_instrument += 1;
+        }
+    }
 }
 
 // ── WAV export helpers ────────────────────────────────────────────────────────
@@ -1844,8 +1864,8 @@ fn run_tui(
 
             // Mode label: always the leftmost element in the status bar.
             let mode_label = match app.view {
-                View::ChainView if app.chain_insert_mode => "INSERT",
                 _ if matches!(app.mode, InputMode::Keyboard) => "KEYBOARD",
+                View::ChainView if app.chain_insert_mode => "INSERT",
                 View::PhraseEditor => match app.mode {
                     InputMode::Normal => "NORMAL",
                     InputMode::Insert => "INSERT",
@@ -1902,10 +1922,8 @@ fn run_tui(
                         format!("{mode_label}  |  {transport}  |  {col_hint}  |  Esc: normal")
                     }
                     InputMode::Command => format!("{mode_label}  |  {transport}  |  :{}", app.cmd_buf),
-                    InputMode::Keyboard => format!(
-                        "{mode_label}  |  {transport}  |  Ins:{:02}  [/]: change instrument  QWERTY: play note  Esc: normal",
-                        app.keyboard_instrument
-                    ),
+                    // InputMode::Keyboard is handled by the `keyboard_active` branch above
+                    InputMode::Keyboard => unreachable!("Keyboard mode status handled before view match"),
                 },
                 View::InstrumentEditor => {
                     if app.instr_editing {
@@ -1965,17 +1983,13 @@ fn run_tui(
                 if matches!(app.mode, InputMode::Keyboard) {
                     match key.code {
                         KeyCode::Esc => {
-                            app.mode = InputMode::Normal;
+                            app.exit_keyboard_mode();
                         }
                         KeyCode::Char('[') => {
-                            if app.keyboard_instrument > 0 {
-                                app.keyboard_instrument -= 1;
-                            }
+                            app.keyboard_instrument_prev();
                         }
                         KeyCode::Char(']') => {
-                            if app.keyboard_instrument < 255 {
-                                app.keyboard_instrument += 1;
-                            }
+                            app.keyboard_instrument_next();
                         }
                         KeyCode::Char(c) => {
                             if let Some(semitone) = qwerty_to_semitone(c) {
@@ -2125,7 +2139,7 @@ fn run_tui(
                             app.push_view(View::InstrumentEditor);
                         }
                         KeyCode::Char('/') => {
-                            app.mode = InputMode::Keyboard;
+                            app.enter_keyboard_mode();
                         }
                         _ => {}
                     },
@@ -2330,7 +2344,7 @@ fn run_tui(
                                     app.mode = InputMode::Normal;
                                 }
                                 KeyCode::Char('/') => {
-                                    app.mode = InputMode::Keyboard;
+                                    app.enter_keyboard_mode();
                                 }
                                 _ => {}
                             }
@@ -2434,7 +2448,7 @@ fn run_tui(
                                     }
                                 }
                                 KeyCode::Char('/') => {
-                                    app.mode = InputMode::Keyboard;
+                                    app.enter_keyboard_mode();
                                 }
                                 _ => {}
                             }
@@ -3850,48 +3864,57 @@ mod tests {
     fn keyboard_mode_enter_sets_mode() {
         let mut app = make_app();
         assert_eq!(app.mode, InputMode::Normal);
-        app.mode = InputMode::Keyboard;
+        app.enter_keyboard_mode();
         assert_eq!(app.mode, InputMode::Keyboard);
     }
 
     #[test]
     fn keyboard_mode_esc_returns_to_normal() {
         let mut app = make_app();
-        app.mode = InputMode::Keyboard;
-        app.mode = InputMode::Normal;
+        app.enter_keyboard_mode();
+        app.exit_keyboard_mode();
         assert_eq!(app.mode, InputMode::Normal);
     }
 
     #[test]
-    fn keyboard_instrument_bracket_clamp_lower() {
+    fn keyboard_instrument_prev_clamps_at_zero() {
         let mut app = make_app();
         app.keyboard_instrument = 0;
-        // Decrement at 0 should stay at 0
-        if app.keyboard_instrument > 0 {
-            app.keyboard_instrument -= 1;
-        }
-        assert_eq!(app.keyboard_instrument, 0);
+        app.keyboard_instrument_prev();
+        assert_eq!(app.keyboard_instrument, 0, "should not underflow below 0");
     }
 
     #[test]
-    fn keyboard_instrument_bracket_clamp_upper() {
+    fn keyboard_instrument_next_clamps_at_255() {
         let mut app = make_app();
         app.keyboard_instrument = 255;
-        // Increment at 255 should stay at 255
-        if app.keyboard_instrument < 255 {
-            app.keyboard_instrument += 1;
-        }
-        assert_eq!(app.keyboard_instrument, 255);
+        app.keyboard_instrument_next();
+        assert_eq!(app.keyboard_instrument, 255, "should not overflow above 255");
+    }
+
+    #[test]
+    fn keyboard_instrument_prev_decrements() {
+        let mut app = make_app();
+        app.keyboard_instrument = 5;
+        app.keyboard_instrument_prev();
+        assert_eq!(app.keyboard_instrument, 4);
+    }
+
+    #[test]
+    fn keyboard_instrument_next_increments() {
+        let mut app = make_app();
+        app.keyboard_instrument = 5;
+        app.keyboard_instrument_next();
+        assert_eq!(app.keyboard_instrument, 6);
     }
 
     #[test]
     fn keyboard_instrument_persists_across_mode_entries() {
         let mut app = make_app();
-        app.mode = InputMode::Keyboard;
+        app.enter_keyboard_mode();
         app.keyboard_instrument = 7;
-        app.mode = InputMode::Normal;
-        // Re-enter Keyboard mode — instrument should still be 7
-        app.mode = InputMode::Keyboard;
+        app.exit_keyboard_mode();
+        app.enter_keyboard_mode();
         assert_eq!(app.keyboard_instrument, 7);
     }
 }
