@@ -23,7 +23,7 @@ use std::{
 };
 use tracker_core::{
     audio::{Command, Mixer, Sequencer, Voice},
-    model::{Chain, ChainSlot, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
+    model::{Chain, ChainSlot, FxCommand, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
     storage,
 };
 
@@ -110,6 +110,23 @@ const INSTR_FIELD_COUNT: usize = 8;
 /// Maximum number of instruments allowed in one project.
 const MAX_INSTRUMENTS: usize = 256;
 
+// ── Phrase-editor column indices ─────────────────────────────────────────────
+const COL_NOTE: usize = 0;
+const COL_INS: usize = 1;
+/// Columns 2–9: FX slot pairs (cmd at even offsets, val at odd offsets).
+/// `col_to_fx(col)` returns `Some((slot_index, is_cmd_field))` for FX columns.
+const COL_FX_FIRST: usize = 2;
+const COL_COUNT: usize = 10; // note + ins + 4×(cmd+val)
+
+fn col_to_fx(col: usize) -> Option<(usize, bool)> {
+    if col >= COL_FX_FIRST && col < COL_COUNT {
+        let offset = col - COL_FX_FIRST;
+        Some((offset / 2, offset % 2 == 0)) // (slot_index, is_cmd)
+    } else {
+        None
+    }
+}
+
 struct App {
     song: Song,
     /// Which top-level screen is active.
@@ -163,6 +180,10 @@ struct App {
     chain_cursor: usize,
     /// Chain view insert mode: editing phrase/transpose values.
     chain_insert_mode: bool,
+    /// Phrase editor: active column (0=note, 1=ins, 2–9=FX cmd/val pairs).
+    cursor_col: usize,
+    /// Phrase editor: buffer for in-progress FX command or value entry.
+    fx_edit_buf: String,
 }
 
 impl App {
@@ -201,6 +222,8 @@ impl App {
             chain_view_row: 0,
             chain_cursor: 0,
             chain_insert_mode: false,
+            cursor_col: 0,
+            fx_edit_buf: String::new(),
         }
     }
 
@@ -526,10 +549,31 @@ fn start_audio_stream(
 
     let mut sequencer = Sequencer::new(48000.0, initial_bpm);
 
+    /// Scheduled retrigger: fires `speed`/`volume`/`pan` on `track` after `samples_until` frames.
+    struct Retrigger {
+        track: usize,
+        speed: f32,
+        volume: f32,
+        pan: f32,
+        samples_until: f64,
+    }
+    let mut retriggers: Vec<Retrigger> = Vec::new();
+
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let frames = data.len() / 2;
+
+            // Fire scheduled retriggers that fall within this buffer.
+            retriggers.retain_mut(|rt| {
+                rt.samples_until -= frames as f64;
+                if rt.samples_until <= 0.0 {
+                    mixer.trigger_with_fx(rt.track, rt.speed, rt.volume, rt.pan);
+                    false
+                } else {
+                    true
+                }
+            });
 
             // Process commands from the UI thread.
             while let Ok(cmd) = consumer.pop() {
@@ -575,12 +619,52 @@ fn start_audio_stream(
                 }
             }
 
-            // Advance the sequencer and trigger notes.
+            // Advance the sequencer and trigger notes, applying any FX slots.
             let events = sequencer.advance(frames);
             for event in &events {
                 current_step.store(event.step_index, Ordering::Relaxed);
-                for &(track, speed) in &event.notes {
-                    mixer.trigger(track, speed);
+                for (track, speed, fx) in &event.notes {
+                    let mut final_speed = *speed;
+                    let mut vol = 1.0f32;
+                    let mut pan = 0.0f32;
+                    let mut ret_count: u8 = 0;
+
+                    for slot in fx.iter() {
+                        if slot.command == 0 {
+                            continue;
+                        }
+                        match FxCommand::from_id(slot.command) {
+                            Some(FxCommand::Vol) => vol = slot.value as f32 / 255.0,
+                            Some(FxCommand::Pan) => {
+                                pan = (slot.value as f32 - 128.0) / 127.0;
+                            }
+                            Some(FxCommand::Pit) => {
+                                let semitones = slot.value as i8;
+                                final_speed *= 2.0f32.powf(semitones as f32 / 12.0);
+                            }
+                            Some(FxCommand::Ret) if slot.value >= 2 => {
+                                ret_count = slot.value;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    mixer.trigger_with_fx(*track, final_speed, vol, pan);
+
+                    // Schedule retriggers at even sub-step intervals.
+                    if ret_count >= 2 {
+                        let step_samples = sequencer.samples_per_step();
+                        let interval = step_samples / ret_count as f64;
+                        for i in 1..ret_count {
+                            retriggers.push(Retrigger {
+                                track: *track,
+                                speed: final_speed,
+                                volume: vol,
+                                pan,
+                                samples_until: interval * i as f64,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -599,6 +683,7 @@ fn start_audio_stream(
 fn render_phrase_grid(
     phrase: &tracker_core::model::Phrase,
     cursor_step: usize,
+    cursor_col: usize,
     phrase_idx: usize,
 ) -> Table<'static> {
     let rows: Vec<Row> = phrase
@@ -606,17 +691,19 @@ fn render_phrase_grid(
         .iter()
         .enumerate()
         .map(|(i, step)| {
+            let is_cursor_row = i == cursor_step;
+
             let note_str = match step.note {
                 Some(n) => note_name(n),
                 None => "---".to_string(),
             };
             let instr_str = match step.instrument {
-                Some(n) => format!("{n:02}"),
+                Some(n) => format!("{n:02X}"),
                 None => "--".to_string(),
             };
-            let fx_str = ".. ..".to_string(); // placeholder
 
-            let row_style = if i == cursor_step {
+            // Base row style for non-cursor-cell content.
+            let row_style = if is_cursor_row {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else if i % 4 == 0 {
                 Style::default().fg(Color::White)
@@ -624,37 +711,116 @@ fn render_phrase_grid(
                 Style::default().fg(Color::Gray)
             };
 
-            let note_style = if i == cursor_step {
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
-            } else if step.note.is_some() {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::DarkGray)
+            let cursor_cell_style =
+                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD);
+
+            // Helper: return cursor_cell_style when this column is active, otherwise row_style.
+            let cell_style = |col: usize| {
+                if is_cursor_row && col == cursor_col {
+                    cursor_cell_style
+                } else {
+                    row_style
+                }
             };
 
-            Row::new(vec![
+            let note_style = if is_cursor_row && cursor_col == COL_NOTE {
+                cursor_cell_style
+            } else if step.note.is_some() {
+                if is_cursor_row {
+                    Style::default().bg(Color::DarkGray).fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Green)
+                }
+            } else {
+                if is_cursor_row {
+                    row_style
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
+            };
+
+            // Build the 10 cells: step#, note, ins, 4×(cmd, val).
+            let mut cells = vec![
                 Cell::from(format!("{i:02}")).style(row_style),
                 Cell::from(note_str).style(note_style),
-                Cell::from(instr_str).style(row_style),
-                Cell::from(fx_str).style(row_style),
-            ])
+                Cell::from(instr_str).style(cell_style(COL_INS)),
+            ];
+
+            for slot_idx in 0..4 {
+                let fx = &step.fx[slot_idx];
+                let cmd_col = COL_FX_FIRST + slot_idx * 2;
+                let val_col = cmd_col + 1;
+
+                let cmd_str = if fx.command == 0 {
+                    "---".to_string()
+                } else {
+                    FxCommand::from_id(fx.command)
+                        .map(|c| c.to_code().to_string())
+                        .unwrap_or_else(|| format!("{:02X}?", fx.command))
+                };
+                let val_str = if fx.command == 0 {
+                    "---".to_string()
+                } else {
+                    format!("{:03}", fx.value)
+                };
+
+                let cmd_style = if is_cursor_row && cursor_col == cmd_col {
+                    cursor_cell_style
+                } else if fx.command != 0 {
+                    if is_cursor_row {
+                        Style::default().bg(Color::DarkGray).fg(Color::Magenta).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Magenta)
+                    }
+                } else {
+                    if is_cursor_row {
+                        row_style
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    }
+                };
+                let val_style = if is_cursor_row && cursor_col == val_col {
+                    cursor_cell_style
+                } else if fx.command != 0 {
+                    if is_cursor_row {
+                        Style::default().bg(Color::DarkGray).fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    }
+                } else {
+                    if is_cursor_row {
+                        row_style
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    }
+                };
+
+                cells.push(Cell::from(cmd_str).style(cmd_style));
+                cells.push(Cell::from(val_str).style(val_style));
+            }
+
+            Row::new(cells)
         })
         .collect();
 
     Table::new(
         rows,
         [
-            Constraint::Length(3),
-            Constraint::Length(5),
-            Constraint::Length(4),
-            Constraint::Min(5),
+            Constraint::Length(3),  // "#"
+            Constraint::Length(5),  // NOTE
+            Constraint::Length(3),  // INS
+            Constraint::Length(4),  // FX1 cmd
+            Constraint::Length(4),  // FX1 val
+            Constraint::Length(4),  // FX2 cmd
+            Constraint::Length(4),  // FX2 val
+            Constraint::Length(4),  // FX3 cmd
+            Constraint::Length(4),  // FX3 val
+            Constraint::Length(4),  // FX4 cmd
+            Constraint::Min(3),     // FX4 val
         ],
     )
     .header(
-        Row::new(vec!["#", "NOTE", "INS", "FX"])
+        Row::new(vec!["#", "NOTE", "INS", "FX1C", "FX1V", "FX2C", "FX2V", "FX3C", "FX3V", "FX4C", "FX4V"])
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     )
     .block(
@@ -1020,7 +1186,7 @@ fn run_tui(
                 }
                 View::PhraseEditor => {
                     let phrase = app.phrase();
-                    let table = render_phrase_grid(phrase, app.cursor_step, app.active_phrase_idx);
+                    let table = render_phrase_grid(phrase, app.cursor_step, app.cursor_col, app.active_phrase_idx);
                     frame.render_widget(table, outer[0]);
                 }
                 View::InstrumentEditor => {
@@ -1055,10 +1221,23 @@ fn run_tui(
                 }
                 View::PhraseEditor => match app.mode {
                     InputMode::Normal => format!("{transport}  |  {}", app.status),
-                    InputMode::Insert => format!(
-                        "{transport}  |  INSERT  Oct:{} Ins:{:02}  |  Esc: normal",
-                        app.octave, app.active_instrument
-                    ),
+                    InputMode::Insert => {
+                        let col_hint = match col_to_fx(app.cursor_col) {
+                            Some((s, true)) => {
+                                let buf = &app.fx_edit_buf;
+                                format!("FX{} CMD: [{buf:<3}]  type 3-letter code (VOL/PAN/PIT/RET)", s + 1)
+                            }
+                            Some((s, false)) => {
+                                let buf = &app.fx_edit_buf;
+                                format!("FX{} VAL: [{buf:<3}]  type 0-255, Enter to confirm", s + 1)
+                            }
+                            None if app.cursor_col == COL_NOTE => {
+                                format!("NOTE  Oct:{} Ins:{:02}  QWERTY piano", app.octave, app.active_instrument)
+                            }
+                            None => format!("Col:{} Ins:{:02}", app.cursor_col, app.active_instrument),
+                        };
+                        format!("{transport}  |  INSERT  {col_hint}  |  Esc: normal")
+                    }
                     InputMode::Command => format!("{transport}  |  :{}", app.cmd_buf),
                 },
                 View::InstrumentEditor => {
@@ -1386,16 +1565,34 @@ fn run_tui(
                                         (app.cursor_step + STEPS_PER_PHRASE - 1)
                                             % STEPS_PER_PHRASE;
                                 }
-                                KeyCode::Char('h') => {}
-                                KeyCode::Char('l') => {}
-                                // Delete / clear step
+                                KeyCode::Char('h') => {
+                                    if app.cursor_col > 0 {
+                                        app.cursor_col -= 1;
+                                    }
+                                    app.fx_edit_buf.clear();
+                                }
+                                KeyCode::Char('l') => {
+                                    if app.cursor_col + 1 < COL_COUNT {
+                                        app.cursor_col += 1;
+                                    }
+                                    app.fx_edit_buf.clear();
+                                }
+                                // Delete / clear step or active FX slot
                                 KeyCode::Char('d') | KeyCode::Delete => {
                                     let idx = app.cursor_step;
-                                    let step = &mut app.phrase_mut().steps[idx];
-                                    step.note = None;
-                                    step.instrument = None;
-                                    step.velocity = 0;
-                                    step.fx = Default::default();
+                                    if let Some((slot_idx, _)) = col_to_fx(app.cursor_col) {
+                                        // Clear just the active FX slot.
+                                        app.phrase_mut().steps[idx].fx[slot_idx] =
+                                            tracker_core::model::FxSlot::default();
+                                    } else {
+                                        // Clear the entire step.
+                                        let step = &mut app.phrase_mut().steps[idx];
+                                        step.note = None;
+                                        step.instrument = None;
+                                        step.velocity = 0;
+                                        step.fx = Default::default();
+                                    }
+                                    app.fx_edit_buf.clear();
                                     app.sync_phrase_to_sequencer();
                                 }
                                 // yy — copy step
@@ -1432,34 +1629,130 @@ fn run_tui(
                         InputMode::Insert => match key.code {
                             KeyCode::Esc => {
                                 app.mode = InputMode::Normal;
+                                app.fx_edit_buf.clear();
                                 app.status =
                                     "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit"
                                         .to_string();
-                            }
-                            KeyCode::Char('-') => {
-                                if app.octave > 1 {
-                                    app.octave -= 1;
-                                }
-                            }
-                            KeyCode::Char('=') => {
-                                if app.octave < 8 {
-                                    app.octave += 1;
-                                }
                             }
                             KeyCode::Up => {
                                 app.cursor_step =
                                     (app.cursor_step + STEPS_PER_PHRASE - 1)
                                         % STEPS_PER_PHRASE;
+                                app.fx_edit_buf.clear();
                             }
                             KeyCode::Down => {
                                 app.cursor_step =
                                     (app.cursor_step + 1) % STEPS_PER_PHRASE;
+                                app.fx_edit_buf.clear();
+                            }
+                            KeyCode::Left => {
+                                if app.cursor_col > 0 {
+                                    app.cursor_col -= 1;
+                                }
+                                app.fx_edit_buf.clear();
+                            }
+                            KeyCode::Right => {
+                                if app.cursor_col + 1 < COL_COUNT {
+                                    app.cursor_col += 1;
+                                }
+                                app.fx_edit_buf.clear();
+                            }
+                            // Octave up/down only active on the NOTE column.
+                            KeyCode::Char('-') if app.cursor_col == COL_NOTE => {
+                                if app.octave > 1 {
+                                    app.octave -= 1;
+                                }
+                            }
+                            KeyCode::Char('=') if app.cursor_col == COL_NOTE => {
+                                if app.octave < 8 {
+                                    app.octave += 1;
+                                }
+                            }
+                            // Delete / Backspace clears active FX field.
+                            KeyCode::Delete | KeyCode::Backspace
+                                if col_to_fx(app.cursor_col).is_some() =>
+                            {
+                                if !app.fx_edit_buf.is_empty() {
+                                    app.fx_edit_buf.pop();
+                                } else if let Some((slot_idx, _)) = col_to_fx(app.cursor_col) {
+                                    let step_idx = app.cursor_step;
+                                    app.phrase_mut().steps[step_idx].fx[slot_idx] =
+                                        tracker_core::model::FxSlot::default();
+                                    app.sync_phrase_to_sequencer();
+                                }
                             }
                             KeyCode::Char(c) => {
-                                if let Some(semitone) = qwerty_to_semitone(c) {
-                                    let base: i32 = 12 * (app.octave as i32 + 1);
-                                    let midi = (base + semitone as i32).clamp(0, 127) as u8;
-                                    app.enter_note(midi);
+                                match col_to_fx(app.cursor_col) {
+                                    Some((slot_idx, true)) => {
+                                        // FX command field: accumulate up to 3 alpha chars.
+                                        if c.is_alphabetic() {
+                                            app.fx_edit_buf.push(c.to_ascii_uppercase());
+                                            if app.fx_edit_buf.len() == 3 {
+                                                let buf = app.fx_edit_buf.clone();
+                                                app.fx_edit_buf.clear();
+                                                let step_idx = app.cursor_step;
+                                                if let Some(cmd) = FxCommand::from_code(&buf) {
+                                                    app.phrase_mut().steps[step_idx].fx[slot_idx]
+                                                        .command = cmd.id();
+                                                    app.sync_phrase_to_sequencer();
+                                                    // Advance to value column.
+                                                    if app.cursor_col + 1 < COL_COUNT {
+                                                        app.cursor_col += 1;
+                                                    }
+                                                } else {
+                                                    app.status =
+                                                        format!("Unknown FX command: {buf}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some((slot_idx, false)) => {
+                                        // FX value field: accumulate up to 3 decimal digits.
+                                        if c.is_ascii_digit() {
+                                            app.fx_edit_buf.push(c);
+                                            if app.fx_edit_buf.len() == 3 {
+                                                let buf = app.fx_edit_buf.clone();
+                                                app.fx_edit_buf.clear();
+                                                if let Ok(v) = buf.parse::<u16>() {
+                                                    let step_idx = app.cursor_step;
+                                                    app.phrase_mut().steps[step_idx].fx[slot_idx]
+                                                        .value = v.min(255) as u8;
+                                                    app.sync_phrase_to_sequencer();
+                                                    // Advance cursor to next step.
+                                                    app.cursor_step =
+                                                        (app.cursor_step + 1) % STEPS_PER_PHRASE;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // NOTE column: QWERTY piano.
+                                        if app.cursor_col == COL_NOTE {
+                                            if let Some(semitone) = qwerty_to_semitone(c) {
+                                                let base: i32 = 12 * (app.octave as i32 + 1);
+                                                let midi =
+                                                    (base + semitone as i32).clamp(0, 127) as u8;
+                                                app.enter_note(midi);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Enter confirms FX value entry early (before 3 digits).
+                            KeyCode::Enter if col_to_fx(app.cursor_col).is_some() => {
+                                if let Some((slot_idx, false)) = col_to_fx(app.cursor_col) {
+                                    let buf = app.fx_edit_buf.clone();
+                                    app.fx_edit_buf.clear();
+                                    if !buf.is_empty() {
+                                        if let Ok(v) = buf.parse::<u16>() {
+                                            let step_idx = app.cursor_step;
+                                            app.phrase_mut().steps[step_idx].fx[slot_idx].value =
+                                                v.min(255) as u8;
+                                            app.sync_phrase_to_sequencer();
+                                            app.cursor_step =
+                                                (app.cursor_step + 1) % STEPS_PER_PHRASE;
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
