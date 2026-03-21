@@ -19,6 +19,7 @@ use ratatui::{
 use rtrb::RingBuffer;
 use std::{
     io,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
         Arc,
@@ -101,6 +102,28 @@ enum InputMode {
     Command,
 }
 
+/// An entry in the sample browser: either a subdirectory or a `.wav` file.
+#[derive(Clone)]
+enum BrowserEntry {
+    Dir(String),
+    Wav(String),
+}
+
+impl BrowserEntry {
+    fn display_name(&self) -> String {
+        match self {
+            BrowserEntry::Dir(name) => format!("{name}/"),
+            BrowserEntry::Wav(name) => name.clone(),
+        }
+    }
+
+    fn sort_key(&self) -> String {
+        match self {
+            BrowserEntry::Dir(name) | BrowserEntry::Wav(name) => name.to_lowercase(),
+        }
+    }
+}
+
 /// Instrument-editor field indices (cursor position in the editor).
 const INSTR_FIELD_NAME: usize = 0;
 const INSTR_FIELD_SAMPLE: usize = 1;
@@ -165,10 +188,12 @@ struct App {
     instr_editing: bool,
     /// Instrument editor: buffer for in-progress text edits.
     instr_edit_buf: String,
-    /// Sample browser: list of .wav files in the current directory.
-    browser_entries: Vec<String>,
+    /// Sample browser: list of directories and .wav files in the current directory.
+    browser_entries: Vec<BrowserEntry>,
     /// Sample browser: cursor row.
     browser_cursor: usize,
+    /// Sample browser: current directory being listed.
+    browser_dir: PathBuf,
     /// Index of the phrase currently being edited.
     active_phrase_idx: usize,
     /// Navigation stack for Esc/Backspace pop-back.
@@ -233,6 +258,7 @@ impl App {
             instr_edit_buf: String::new(),
             browser_entries: Vec::new(),
             browser_cursor: 0,
+            browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             active_phrase_idx: 0,
             view_stack: Vec::new(),
             song_cursor_row: 0,
@@ -409,23 +435,63 @@ impl App {
         }
     }
 
-    /// Open the sample browser listing .wav files from the current directory.
+    /// Open the sample browser starting at the instrument's current sample directory,
+    /// or the current working directory if no sample is set.
     fn open_sample_browser(&mut self) {
-        self.browser_entries = list_wav_files(".");
+        let start_dir = self
+            .song
+            .instruments
+            .get(self.active_instrument)
+            .and_then(|instr| instr.sample.as_ref())
+            .and_then(|sample| {
+                let p = std::path::Path::new(&sample.path);
+                p.parent().map(|parent| parent.to_path_buf())
+            })
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            });
+        self.browser_dir = start_dir;
+        self.browser_entries = list_browser_entries(&self.browser_dir);
         self.browser_cursor = 0;
         self.push_view(View::SampleBrowser);
     }
 
-    /// Confirm selection in the sample browser — loads the file into the active instrument.
-    fn confirm_browser_selection(&mut self) {
-        if let Some(path) = self.browser_entries.get(self.browser_cursor).cloned() {
-            self.record("select sample");
-            self.ensure_instrument(self.active_instrument);
-            if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
-                instr.sample = Some(tracker_core::model::Sample::from_path(&path));
+    /// Handle Enter in the sample browser.
+    /// Navigates into a directory or loads a `.wav` file into the active instrument.
+    fn browser_enter(&mut self) {
+        if let Some(entry) = self.browser_entries.get(self.browser_cursor).cloned() {
+            match entry {
+                BrowserEntry::Dir(name) => {
+                    self.browser_dir = self.browser_dir.join(&name);
+                    self.browser_entries = list_browser_entries(&self.browser_dir);
+                    self.browser_cursor = 0;
+                }
+                BrowserEntry::Wav(name) => {
+                    let full_path = self.browser_dir.join(&name);
+                    let path_str = full_path
+                        .canonicalize()
+                        .unwrap_or(full_path)
+                        .to_string_lossy()
+                        .to_string();
+                    self.record("select sample");
+                    self.ensure_instrument(self.active_instrument);
+                    if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
+                        instr.sample = Some(tracker_core::model::Sample::from_path(path_str));
+                    }
+                    self.pop_view();
+                    self.reload_instrument_sample();
+                }
             }
-            self.pop_view();
-            self.reload_instrument_sample();
+        }
+    }
+
+    /// Navigate to the parent directory in the sample browser.
+    fn browser_go_up(&mut self) {
+        if let Some(parent) = self.browser_dir.parent().map(|p| p.to_path_buf()) {
+            self.browser_dir = parent;
+            self.browser_entries = list_browser_entries(&self.browser_dir);
+            self.browser_cursor = 0;
         }
     }
 
@@ -764,22 +830,24 @@ fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
     Ok((Arc::new(samples), channels))
 }
 
-/// List `.wav` files (by filename) in `dir`, sorted alphabetically.
-fn list_wav_files(dir: &str) -> Vec<String> {
+/// List subdirectories and `.wav` files in `dir`, sorted alphabetically (case-insensitive).
+/// All other file types are excluded.
+fn list_browser_entries(dir: &std::path::Path) -> Vec<BrowserEntry> {
     let mut entries = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
-            if let Some(ext) = path.extension() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                entries.push(BrowserEntry::Dir(name));
+            } else if let Some(ext) = path.extension() {
                 if ext.to_ascii_lowercase() == "wav" {
-                    if let Some(name) = path.file_name() {
-                        entries.push(name.to_string_lossy().to_string());
-                    }
+                    entries.push(BrowserEntry::Wav(name));
                 }
             }
         }
     }
-    entries.sort();
+    entries.sort_by_key(|e| e.sort_key());
     entries
 }
 
@@ -1383,29 +1451,39 @@ fn render_instrument_editor(app: &App) -> Paragraph<'static> {
 // ── Sample browser render ─────────────────────────────────────────────────────
 
 fn render_sample_browser(app: &App) -> Paragraph<'static> {
-    let lines: Vec<ratatui::text::Line> = if app.browser_entries.is_empty() {
-        vec![ratatui::text::Line::styled(
-            "  (no .wav files found in current directory)",
+    let dir_display = app.browser_dir.to_string_lossy().to_string();
+
+    let mut lines = vec![
+        ratatui::text::Line::styled(
+            format!("  {dir_display}"),
             Style::default().fg(app.theme.inactive_track),
-        )]
+        ),
+        ratatui::text::Line::from(""),
+    ];
+
+    if app.browser_entries.is_empty() {
+        lines.push(ratatui::text::Line::styled(
+            "  (no files found in current directory)",
+            Style::default().fg(app.theme.inactive_track),
+        ));
     } else {
-        app.browser_entries
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let (prefix, style) = if i == app.browser_cursor {
-                    ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
-                } else {
-                    ("  ", Style::default().fg(Color::White))
-                };
-                ratatui::text::Line::styled(format!("{prefix}{name}"), style)
-            })
-            .collect()
-    };
+        for (i, entry) in app.browser_entries.iter().enumerate() {
+            let is_dir = matches!(entry, BrowserEntry::Dir(_));
+            let display = entry.display_name();
+            let (prefix, style) = if i == app.browser_cursor {
+                ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
+            } else if is_dir {
+                ("  ", Style::default().fg(app.theme.screen_title))
+            } else {
+                ("  ", Style::default().fg(Color::White))
+            };
+            lines.push(ratatui::text::Line::styled(format!("{prefix}{display}"), style));
+        }
+    }
 
     Paragraph::new(lines).block(
         Block::default()
-            .title("Sample Browser  [Enter: select  Esc: cancel]")
+            .title("Sample Browser  [Enter: select  -/Backspace: up  Esc: cancel]")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.screen_title)),
     )
@@ -1681,7 +1759,7 @@ fn run_tui(
                 }
                 View::SampleBrowser => {
                     format!(
-                        "{mode_label}  |  j/k: nav  Enter: select  Esc: cancel  ({} files)",
+                        "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  Esc: cancel  ({} entries)",
                         app.browser_entries.len()
                     )
                 }
@@ -2404,7 +2482,8 @@ fn run_tui(
                                         % app.browser_entries.len();
                             }
                         }
-                        KeyCode::Enter => app.confirm_browser_selection(),
+                        KeyCode::Enter => app.browser_enter(),
+                        KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
                         _ => {}
                     },
 
@@ -2909,28 +2988,51 @@ mod tests {
     }
 
     #[test]
-    fn list_wav_files_returns_sorted_list() {
-        // Create temp wav files
-        let dir = std::env::temp_dir().join("tracker_wav_test");
+    fn list_browser_entries_tags_and_filters_correctly() {
+        let dir = std::env::temp_dir().join("tracker_browser_test");
         std::fs::create_dir_all(&dir).ok();
-        let dir_str = dir.to_str().unwrap();
 
-        for name in &["b.wav", "a.WAV", "c.wav"] {
+        // Create wav files (case-insensitive extension), a non-wav file, and a subdir
+        for name in &["b.wav", "a.WAV", "c.wav", "ignored.txt"] {
             std::fs::write(dir.join(name), b"RIFF").ok();
         }
+        let subdir = dir.join("samples_dir");
+        std::fs::create_dir_all(&subdir).ok();
 
-        let entries = list_wav_files(dir_str);
+        let entries = list_browser_entries(&dir);
 
         // Clean up
-        for name in &["b.wav", "a.WAV", "c.wav"] {
+        for name in &["b.wav", "a.WAV", "c.wav", "ignored.txt"] {
             std::fs::remove_file(dir.join(name)).ok();
         }
+        std::fs::remove_dir(&subdir).ok();
 
-        // All three should appear, sorted (case-insensitive extension match)
-        assert!(!entries.is_empty(), "should find .wav files");
-        // Check sorted
-        let is_sorted = entries.windows(2).all(|w| w[0] <= w[1]);
-        assert!(is_sorted, "entries should be sorted: {entries:?}");
+        // Should contain the directory and the 3 wav files, not the txt file
+        assert!(!entries.is_empty(), "should find entries");
+        let dirs: Vec<_> = entries.iter().filter(|e| matches!(e, BrowserEntry::Dir(_))).collect();
+        let wavs: Vec<_> = entries.iter().filter(|e| matches!(e, BrowserEntry::Wav(_))).collect();
+        assert_eq!(dirs.len(), 1, "should have 1 directory");
+        assert_eq!(wavs.len(), 3, "should have 3 wav files");
+
+        // Check sorted (case-insensitive) — dirs and wavs interleaved alphabetically
+        let names: Vec<String> = entries.iter().map(|e| e.sort_key()).collect();
+        let is_sorted = names.windows(2).all(|w| w[0] <= w[1]);
+        assert!(is_sorted, "entries should be sorted: {names:?}");
+    }
+
+    #[test]
+    fn list_browser_entries_empty_dir() {
+        let dir = std::env::temp_dir().join("tracker_browser_empty_test");
+        std::fs::create_dir_all(&dir).ok();
+        // Remove any files that might exist from a previous run
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                std::fs::remove_file(entry.path()).ok();
+                std::fs::remove_dir(entry.path()).ok();
+            }
+        }
+        let entries = list_browser_entries(&dir);
+        assert!(entries.is_empty(), "empty dir should yield no entries");
     }
 
     #[test]
@@ -2942,6 +3044,74 @@ mod tests {
         // Simulate Esc — cancel
         app.view = View::InstrumentEditor;
         assert!(matches!(app.view, View::InstrumentEditor));
+    }
+
+    #[test]
+    fn browser_enter_on_dir_updates_browser_dir_and_entries() {
+        let parent = std::env::temp_dir().join("tracker_browser_enter_test");
+        let subdir = parent.join("subdir");
+        std::fs::create_dir_all(&subdir).ok();
+        std::fs::write(subdir.join("kick.wav"), b"RIFF").ok();
+
+        let mut app = make_app();
+        app.browser_dir = parent.clone();
+        app.browser_entries = list_browser_entries(&parent);
+        app.browser_cursor = 0;
+
+        // Find the index of the Dir entry
+        let dir_idx = app
+            .browser_entries
+            .iter()
+            .position(|e| matches!(e, BrowserEntry::Dir(_)))
+            .expect("should have a Dir entry");
+        app.browser_cursor = dir_idx;
+
+        app.browser_enter();
+
+        assert_eq!(app.browser_dir, subdir, "browser_dir should update to subdir");
+        assert_eq!(app.browser_cursor, 0, "cursor should reset to 0");
+        let has_wav = app
+            .browser_entries
+            .iter()
+            .any(|e| matches!(e, BrowserEntry::Wav(n) if n == "kick.wav"));
+        assert!(has_wav, "browser_entries should contain kick.wav after entering subdir");
+
+        // Clean up
+        std::fs::remove_file(subdir.join("kick.wav")).ok();
+        std::fs::remove_dir(&subdir).ok();
+        std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn browser_go_up_navigates_to_parent() {
+        let parent = std::env::temp_dir().join("tracker_go_up_test");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).ok();
+
+        let mut app = make_app();
+        app.browser_dir = child.clone();
+        app.browser_entries = list_browser_entries(&child);
+
+        app.browser_go_up();
+
+        assert_eq!(app.browser_dir, parent, "browser_dir should be the parent after go_up");
+        assert_eq!(app.browser_cursor, 0, "cursor should reset to 0");
+
+        // Clean up
+        std::fs::remove_dir(&child).ok();
+        std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn browser_go_up_at_root_does_nothing() {
+        let root = PathBuf::from("/");
+        let mut app = make_app();
+        app.browser_dir = root.clone();
+        app.browser_entries = Vec::new();
+
+        app.browser_go_up();
+
+        assert_eq!(app.browser_dir, root, "browser_dir should not change when already at root");
     }
 
     #[test]
