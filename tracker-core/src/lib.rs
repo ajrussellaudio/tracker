@@ -7,6 +7,8 @@ pub use model::{
     FX_SLOTS_PER_STEP, STEPS_PER_PHRASE,
 };
 
+pub use audio::Sequencer;
+
 #[cfg(test)]
 mod tests {
     use super::*;

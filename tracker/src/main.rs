@@ -16,13 +16,13 @@ use rtrb::RingBuffer;
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     time::Duration,
 };
 use tracker_core::{
-    audio::{Command, Mixer, Voice},
+    audio::{Command, Mixer, Sequencer, Voice},
     model::{Song, Step, STEPS_PER_PHRASE},
     storage,
 };
@@ -109,10 +109,19 @@ struct App {
     producer: Option<rtrb::Producer<Command>>,
     /// Root note of the loaded sample (for pitch calculation).
     sample_root: u8,
+    /// Whether the sequencer is currently playing (shared with audio thread).
+    seq_playing: Arc<AtomicBool>,
+    /// Current sequencer step index as reported by the audio thread.
+    current_seq_step: Arc<AtomicU8>,
 }
 
 impl App {
-    fn new(producer: Option<rtrb::Producer<Command>>, sample_root: u8) -> Self {
+    fn new(
+        producer: Option<rtrb::Producer<Command>>,
+        sample_root: u8,
+        seq_playing: Arc<AtomicBool>,
+        current_seq_step: Arc<AtomicU8>,
+    ) -> Self {
         // Ensure the song has at least one phrase to edit.
         let mut song = Song::default();
         if song.phrases.is_empty() {
@@ -127,9 +136,11 @@ impl App {
             yy_pending: false,
             yanked_step: None,
             cmd_buf: String::new(),
-            status: "NORMAL  |  i: insert  |  :: command  |  q: quit".to_string(),
+            status: "NORMAL  |  SPC: play  |  i: insert  |  :: command  |  q: quit".to_string(),
             producer,
             sample_root,
+            seq_playing,
+            current_seq_step,
         }
     }
 
@@ -141,6 +152,45 @@ impl App {
         &self.song.phrases[0]
     }
 
+    /// Send a command to the audio thread (fire-and-forget).
+    fn send_cmd(&mut self, cmd: Command) {
+        if let Some(prod) = &mut self.producer {
+            let _ = prod.push(cmd);
+        }
+    }
+
+    /// Push a fresh phrase snapshot to the sequencer.
+    fn sync_phrase_to_sequencer(&mut self) {
+        let phrase = Box::new(self.phrase().clone());
+        self.send_cmd(Command::UpdatePhrase(phrase));
+        self.send_cmd(Command::SetSampleRoot(self.sample_root));
+    }
+
+    /// Toggle play / stop.
+    fn toggle_play(&mut self) {
+        if self.seq_playing.load(Ordering::Relaxed) {
+            self.send_cmd(Command::Stop);
+            self.seq_playing.store(false, Ordering::Relaxed);
+        } else {
+            self.sync_phrase_to_sequencer();
+            self.send_cmd(Command::Play);
+            self.seq_playing.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Restart sequencer from step 0 (F5).
+    fn restart_play(&mut self) {
+        self.sync_phrase_to_sequencer();
+        self.send_cmd(Command::Restart);
+        self.seq_playing.store(true, Ordering::Relaxed);
+    }
+
+    /// Adjust BPM by `delta` and send the new value to the audio thread.
+    fn adjust_bpm(&mut self, delta: f32) {
+        self.song.bpm = (self.song.bpm + delta).clamp(20.0, 999.0);
+        self.send_cmd(Command::SetBpm(self.song.bpm));
+    }
+
     /// Enter a note at the current step and advance the cursor.
     fn enter_note(&mut self, midi: u8) {
         let cursor = self.cursor_step;
@@ -150,11 +200,14 @@ impl App {
         step.instrument = Some(instr);
         step.velocity = 100;
 
-        // Send NoteOn to audio thread.
+        // Send NoteOn to audio thread for live preview.
         if let Some(prod) = &mut self.producer {
             let speed = pitch_speed(midi, self.sample_root);
             let _ = prod.push(Command::NoteOn { slot: 0, speed });
         }
+
+        // Keep sequencer phrase in sync.
+        self.sync_phrase_to_sequencer();
 
         // Advance cursor.
         self.cursor_step = (self.cursor_step + 1) % STEPS_PER_PHRASE;
@@ -179,6 +232,7 @@ impl App {
                     if self.song.phrases.is_empty() {
                         self.song.phrases.push(tracker_core::model::Phrase::default());
                     }
+                    self.sync_phrase_to_sequencer();
                     self.status = format!("Loaded: {path}");
                 }
                 Err(e) => self.status = format!("Error: {e}"),
@@ -190,7 +244,8 @@ impl App {
                 Err(e) => self.status = format!("Error: {e}"),
             }
         } else if raw.is_empty() {
-            self.status = "NORMAL  |  i: insert  |  :: command  |  q: quit".to_string();
+            self.status =
+                "NORMAL  |  SPC: play  |  i: insert  |  :: command  |  q: quit".to_string();
         } else {
             self.status = format!("Unknown command: {raw}");
         }
@@ -231,8 +286,10 @@ fn load_wav(path: &str) -> Result<(Arc<Vec<f32>>, usize)> {
 
 fn start_audio_stream(
     mut consumer: rtrb::Consumer<Command>,
-    is_playing: Arc<AtomicBool>,
+    seq_playing: Arc<AtomicBool>,
+    current_step: Arc<AtomicU8>,
     sample_buf: Option<(Arc<Vec<f32>>, usize)>,
+    initial_bpm: f32,
 ) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
@@ -250,17 +307,52 @@ fn start_audio_stream(
         mixer.load_slot(0, Voice::new(buf, channels));
     }
 
+    let mut sequencer = Sequencer::new(48000.0, initial_bpm);
+
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            let frames = data.len() / 2;
+
+            // Process commands from the UI thread.
             while let Ok(cmd) = consumer.pop() {
                 match cmd {
                     Command::NoteOn { slot, speed } => mixer.trigger(slot as usize, speed),
                     Command::NoteOff(slot) => mixer.stop_slot(slot as usize),
+                    Command::Play => {
+                        if let Some(speed) = sequencer.play() {
+                            mixer.trigger(0, speed);
+                        }
+                        seq_playing.store(true, Ordering::Relaxed);
+                    }
+                    Command::Stop => {
+                        sequencer.stop();
+                        seq_playing.store(false, Ordering::Relaxed);
+                    }
+                    Command::Restart => {
+                        if let Some(speed) = sequencer.restart() {
+                            mixer.trigger(0, speed);
+                        }
+                        current_step.store(0, Ordering::Relaxed);
+                        seq_playing.store(true, Ordering::Relaxed);
+                    }
+                    Command::SetBpm(bpm) => sequencer.bpm = bpm,
+                    Command::SetSwing(swing) => sequencer.swing = swing,
+                    Command::UpdatePhrase(phrase) => sequencer.set_phrase(phrase),
+                    Command::SetSampleRoot(root) => sequencer.sample_root = root,
                 }
             }
+
+            // Advance the sequencer and trigger notes.
+            let events = sequencer.advance(frames);
+            for (step_idx, maybe_speed) in events {
+                current_step.store(step_idx, Ordering::Relaxed);
+                if let Some(speed) = maybe_speed {
+                    mixer.trigger(0, speed);
+                }
+            }
+
             mixer.render(data);
-            is_playing.store(mixer.any_active(), Ordering::Relaxed);
         },
         |err| eprintln!("audio stream error: {err}"),
         None,
@@ -345,6 +437,8 @@ fn render_phrase_grid(
 fn run_tui(
     producer: Option<rtrb::Producer<Command>>,
     sample_root: u8,
+    seq_playing: Arc<AtomicBool>,
+    current_seq_step: Arc<AtomicU8>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -352,7 +446,7 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(producer, sample_root);
+    let mut app = App::new(producer, sample_root, seq_playing, current_seq_step);
 
     loop {
         // ── Render ────────────────────────────────────────────────────────────
@@ -369,13 +463,21 @@ fn run_tui(
             frame.render_widget(table, outer[0]);
 
             // Status bar
+            let playing = app.seq_playing.load(Ordering::Relaxed);
+            let seq_step = app.current_seq_step.load(Ordering::Relaxed);
+            let transport = if playing {
+                format!("▶  Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
+            } else {
+                format!("■  Step:{:02}  BPM:{:.1}", seq_step, app.song.bpm)
+            };
+
             let status_text = match app.mode {
-                InputMode::Normal => app.status.clone(),
+                InputMode::Normal => format!("{transport}  |  {}", app.status),
                 InputMode::Insert => format!(
-                    "INSERT  |  Oct:{} Ins:{:02}  |  Esc: normal",
+                    "{transport}  |  INSERT  Oct:{} Ins:{:02}  |  Esc: normal",
                     app.octave, app.active_instrument
                 ),
-                InputMode::Command => format!(":{}", app.cmd_buf),
+                InputMode::Command => format!("{transport}  |  :{}", app.cmd_buf),
             };
             let status = Paragraph::new(status_text)
                 .style(Style::default().fg(Color::White).bg(Color::DarkGray));
@@ -398,7 +500,13 @@ fn run_tui(
                             KeyCode::Char('i') => {
                                 app.mode = InputMode::Insert;
                             }
-                            // Vim navigation
+                            // Transport: Space = play/stop, F5 = restart from 0
+                            KeyCode::Char(' ') => app.toggle_play(),
+                            KeyCode::F(5) => app.restart_play(),
+                            // BPM adjustment: left/right arrows
+                            KeyCode::Left => app.adjust_bpm(-1.0),
+                            KeyCode::Right => app.adjust_bpm(1.0),
+                            // Vim navigation (up/down)
                             KeyCode::Char('j') | KeyCode::Down => {
                                 app.cursor_step =
                                     (app.cursor_step + 1) % STEPS_PER_PHRASE;
@@ -408,8 +516,8 @@ fn run_tui(
                                     (app.cursor_step + STEPS_PER_PHRASE - 1)
                                         % STEPS_PER_PHRASE;
                             }
-                            KeyCode::Char('h') | KeyCode::Left => {}
-                            KeyCode::Char('l') | KeyCode::Right => {}
+                            KeyCode::Char('h') => {}
+                            KeyCode::Char('l') => {}
                             // Delete / clear step
                             KeyCode::Char('d') | KeyCode::Delete => {
                                 let idx = app.cursor_step;
@@ -418,6 +526,7 @@ fn run_tui(
                                 step.instrument = None;
                                 step.velocity = 0;
                                 step.fx = Default::default();
+                                app.sync_phrase_to_sequencer();
                             }
                             // yy — copy step
                             KeyCode::Char('y') => {
@@ -439,6 +548,7 @@ fn run_tui(
                                 if let Some(s) = app.yanked_step.clone() {
                                     let idx = app.cursor_step;
                                     app.phrase_mut().steps[idx] = s;
+                                    app.sync_phrase_to_sequencer();
                                 }
                             }
                             _ => {}
@@ -454,7 +564,7 @@ fn run_tui(
                         KeyCode::Esc => {
                             app.mode = InputMode::Normal;
                             app.status =
-                                "NORMAL  |  i: insert  |  :: command  |  q: quit"
+                                "NORMAL  |  SPC: play  |  i: insert  |  :: command  |  q: quit"
                                     .to_string();
                         }
                         // Octave shift
@@ -528,7 +638,10 @@ fn main() -> Result<()> {
 
     // Lock-free SPSC channel: UI → audio thread.
     let (producer, consumer) = RingBuffer::<Command>::new(64);
-    let is_playing = Arc::new(AtomicBool::new(false));
+
+    // Shared state: UI reads, audio writes.
+    let seq_playing = Arc::new(AtomicBool::new(false));
+    let current_seq_step = Arc::new(AtomicU8::new(0));
 
     let sample_buf_and_root: Option<(Arc<Vec<f32>>, usize, u8)> =
         if let Some(ref path) = sample_path {
@@ -546,13 +659,21 @@ fn main() -> Result<()> {
     let sample_root = sample_buf_and_root.as_ref().map(|t| t.2).unwrap_or(60);
     let audio_buf = sample_buf_and_root.map(|(buf, ch, _)| (buf, ch));
 
-    let _stream = start_audio_stream(consumer, Arc::clone(&is_playing), audio_buf)
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not open audio device: {e}");
-            panic!("audio unavailable: {e}")
-        });
+    let initial_bpm = 120.0f32;
 
-    run_tui(Some(producer), sample_root)?;
+    let _stream = start_audio_stream(
+        consumer,
+        Arc::clone(&seq_playing),
+        Arc::clone(&current_seq_step),
+        audio_buf,
+        initial_bpm,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Warning: could not open audio device: {e}");
+        panic!("audio unavailable: {e}")
+    });
+
+    run_tui(Some(producer), sample_root, seq_playing, current_seq_step)?;
     Ok(())
 }
 
@@ -564,7 +685,12 @@ mod tests {
     use tracker_core::model::Song;
 
     fn make_app() -> App {
-        App::new(None, 60)
+        App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+        )
     }
 
     #[test]
