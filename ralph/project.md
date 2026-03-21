@@ -16,10 +16,11 @@ cargo build
 cargo test
 ```
 
-## Permanent issue
+## PRD label
 
-Issue **#1** is the PRD. It must never be closed or touched. All references in
-the prompt to "excluding issue #1" or "never touch issue #1" refer to this number.
+Issues labelled **`prd`** are Product Requirements Documents. Ralph must never
+implement, close, or comment on them. All references in the prompt to
+"excluding PRD issues" refer to issues carrying this label.
 
 ## Branch prefix
 

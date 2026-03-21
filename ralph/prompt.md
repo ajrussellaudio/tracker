@@ -15,7 +15,7 @@ Before doing anything else, make sure the workspace is up to date:
 Use sub-agents for the following orientation tasks so you don't burn your primary context window:
 
 - Run `git log --oneline -20` to see recent commits.
-- Use the GitHub MCP tools to list all open issues in the repo (see `project.md`), excluding the permanent issue (see `project.md`).
+- Use the GitHub MCP tools to list all open issues in the repo (see `project.md`), excluding any issues labelled `prd`.
 
 ## Step 2 — Decide what to work on
 
@@ -39,7 +39,7 @@ Choose a mode based on this table:
 
 ### If there are no open ralph PRs
 
-- List all open issues (excluding the permanent issue — see `project.md`).
+- List all open issues excluding any labelled `prd`.
 - Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one.
 - Proceed to **[Implement Mode](#implement-mode)**.
 - If no open issues remain, proceed to **[Step 7](#step-7--decide-what-comes-next)**.
@@ -209,10 +209,10 @@ If the checks passed:
 
 ## Step 7 — Decide what comes next
 
-- List all open issues (excluding the permanent issue — see `project.md`).
+- List all open issues excluding any labelled `prd`.
 - List all open `ralph/issue-*` PRs.
 
-- **If there are no open issues (excluding the permanent issue) AND no open ralph PRs:** emit this token on a line by itself and stop:
+- **If there are no open issues (excluding `prd`-labelled issues) AND no open ralph PRs:** emit this token on a line by itself and stop:
 
   <promise>COMPLETE</promise>
 
@@ -226,7 +226,7 @@ If the checks passed:
 - **`<promise>COMPLETE</promise>` may only be emitted from Step 7.** Never emit it from inside a mode (Implement, Review, Fix, Merge, etc.).
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
-- **Never touch the permanent issue** (see `project.md`). It is the PRD and must remain open.
+- **Never touch `prd`-labelled issues.** Do not implement, close, or comment on them.
 - **Never commit directly to `main`.** Always use a `ralph/issue-<N>` branch.
 - **Always merge with `--merge`, never `--squash`.** Squash breaks the downstream rebase chain.
 
