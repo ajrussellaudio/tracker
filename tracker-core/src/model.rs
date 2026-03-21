@@ -221,6 +221,7 @@ pub struct Song {
     /// so a single-row arrangement produces an infinite phrase loop.
     pub arrangement: Vec<[Option<u8>; TRACKS]>,
     /// Per-track mixer state (volume, pan, mute, solo, FX send).
+    #[serde(default)]
     pub mixer: [MixerTrack; TRACKS],
 }
 
@@ -259,4 +260,33 @@ impl Default for Song {
 pub fn migrate(mut song: Song) -> Song {
     song.version = CURRENT_VERSION;
     song
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn song_deserializes_without_mixer_field() {
+        // Simulates loading a v2 JSON file that pre-dates the mixer field.
+        // #[serde(default)] on Song::mixer must prevent a "missing field" error.
+        let json = r#"{
+            "version": 2,
+            "name": "",
+            "bpm": 120.0,
+            "instruments": [],
+            "samples": [],
+            "phrases": [{"steps": []}],
+            "chains": [{"slots": [{"phrase": 0, "transpose": 0}]}],
+            "arrangement": [[0, null, null, null, null, null, null, null]]
+        }"#;
+        let song: Song = serde_json::from_str(json).expect("v2 JSON should deserialise without mixer field");
+        // All tracks should default to unity gain
+        for track in &song.mixer {
+            assert!((track.volume - 1.0).abs() < f32::EPSILON);
+            assert!((track.pan).abs() < f32::EPSILON);
+            assert!(!track.mute);
+            assert!(!track.solo);
+        }
+    }
 }
