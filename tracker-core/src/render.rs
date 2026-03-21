@@ -138,7 +138,7 @@ pub fn render_to_buffer(
 
     // ── Main render loop ─────────────────────────────────────────────────────
     let mut output: Vec<f32> = Vec::with_capacity(approx_total_frames * 2);
-    let mut steps_seen = 0usize;
+    let mut steps_seen = 1usize; // step 0 already fired via current_step_notes()
     let mut in_tail = false;
     let mut tail_remaining = total_tail_frames;
     let mut chunk = vec![0.0f32; CHUNK_FRAMES * 2];
@@ -366,6 +366,34 @@ mod tests {
         assert!(
             render_secs < song_duration_secs,
             "offline render ({render_secs:.3}s) must be faster than song duration ({song_duration_secs:.3}s)"
+        );
+    }
+
+    /// Verify that step 0 fires exactly once per phrase cycle (not twice due to
+    /// double-trigger from the manual `current_step_notes()` pre-fire and the
+    /// sequencer wrapping back to step 0 at the end of the phrase).
+    #[test]
+    fn step_0_fires_exactly_once_per_phrase_cycle() {
+        let song = make_test_song(60);
+
+        // 1-sample buffer: voice produces exactly one non-zero output frame per trigger,
+        // then goes silent.  If step 0 double-triggers (the bug this test guards against)
+        // there will be two non-zero L-channel frames instead of one.
+        let buf = Arc::new(vec![1.0f32; 1]);
+        let buffers: Vec<Option<(Arc<Vec<f32>>, usize)>> = vec![Some((buf, 1))];
+
+        let audio = render_to_buffer(&song, &buffers, Some(0), &mut |_| {});
+
+        // Count non-zero L-channel samples (interleaved: index 0, 2, 4, ...).
+        let nonzero_count = audio
+            .iter()
+            .step_by(2)
+            .filter(|&&s| s.abs() > 1e-6)
+            .count();
+
+        assert_eq!(
+            nonzero_count, 1,
+            "step 0 should fire exactly once per phrase render (1 non-zero L frame), got {nonzero_count}"
         );
     }
 
