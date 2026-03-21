@@ -1671,10 +1671,10 @@ fn run_tui(
                             if let Ok(chain_idx) = u8::from_str_radix(&c.to_string(), 16) {
                                 let row = app.song_cursor_row;
                                 let track = app.song_cursor_track;
+                                app.record(&format!("assign chain to row {} track {}", row, track));
                                 while app.song.arrangement.len() <= row {
                                     app.song.arrangement.push([None; TRACKS]);
                                 }
-                                app.record(&format!("assign chain to row {} track {}", row, track));
                                 app.ensure_chain(chain_idx as usize);
                                 app.song.arrangement[row][track] = Some(chain_idx);
                                 app.sync_song_to_sequencer();
@@ -1741,20 +1741,24 @@ fn run_tui(
                                 // h/l: adjust phrase index
                                 KeyCode::Char('h') | KeyCode::Left => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain phrase");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = slot.phrase.saturating_sub(1)
-                                                .min(app.song.phrases.len().saturating_sub(1) as u8);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                app.song.chains[ci].slots[cursor].phrase.saturating_sub(1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain phrase");
-                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                (app.song.chains[ci].slots[cursor].phrase + 1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1762,18 +1766,22 @@ fn run_tui(
                                 // ,/. : adjust transpose (semitones down/up)
                                 KeyCode::Char(',') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain transpose");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('.') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain transpose");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_add(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_add(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1803,19 +1811,23 @@ fn run_tui(
                                 // h/l: adjust phrase index in normal mode too
                                 KeyCode::Char('h') | KeyCode::Left => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain phrase");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = slot.phrase.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                app.song.chains[ci].slots[cursor].phrase.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain phrase");
-                                        let max_phrase = app.song.phrases.len().saturating_sub(1) as u8;
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.phrase = (slot.phrase + 1).min(max_phrase);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain phrase");
+                                            let max = app.song.phrases.len().saturating_sub(1) as u8;
+                                            app.song.chains[ci].slots[cursor].phrase =
+                                                (app.song.chains[ci].slots[cursor].phrase + 1).min(max);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
@@ -1823,18 +1835,22 @@ fn run_tui(
                                 // ,/. : adjust transpose
                                 KeyCode::Char(',') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain transpose");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_sub(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_sub(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
                                 }
                                 KeyCode::Char('.') => {
                                     if let Some(ci) = chain_idx_opt {
-                                        app.record("adjust chain transpose");
-                                        if let Some(slot) = app.song.chains[ci].slots.get_mut(app.chain_cursor) {
-                                            slot.transpose = slot.transpose.saturating_add(1);
+                                        let cursor = app.chain_cursor;
+                                        if cursor < app.song.chains[ci].slots.len() {
+                                            app.record("adjust chain transpose");
+                                            app.song.chains[ci].slots[cursor].transpose =
+                                                app.song.chains[ci].slots[cursor].transpose.saturating_add(1);
                                             app.sync_song_to_sequencer();
                                         }
                                     }
