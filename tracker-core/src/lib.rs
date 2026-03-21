@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod model;
+pub mod render;
 pub mod storage;
 
 pub use model::{
@@ -8,6 +9,7 @@ pub use model::{
 };
 
 pub use audio::{Sequencer, StepEvent};
+pub use render::render_to_buffer;
 
 #[cfg(test)]
 mod tests {
