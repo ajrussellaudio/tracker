@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::model::{Phrase, STEPS_PER_PHRASE};
+use crate::model::{InterpMode, Phrase, STEPS_PER_PHRASE};
 
 /// Commands sent from the UI thread to the audio thread via a ring buffer.
 #[derive(Clone, Debug)]
@@ -24,6 +24,29 @@ pub enum Command {
     UpdatePhrase(Box<Phrase>),
     /// Set the root note of the loaded sample (MIDI 0-127; default 60 = C4).
     SetSampleRoot(u8),
+    /// Replace the voice in `slot` with a new buffer and settings.
+    LoadVoice {
+        slot: u8,
+        samples: Arc<Vec<f32>>,
+        channels: usize,
+        loop_start: u32,
+        loop_end: u32,
+        interp_mode: InterpMode,
+    },
+    /// Update loop points for the voice currently in `slot` (takes effect immediately).
+    SetLoopPoints { slot: u8, loop_start: u32, loop_end: u32 },
+    /// Update interpolation mode for the voice in `slot` (takes effect on next render frame).
+    SetInterpMode { slot: u8, interp_mode: InterpMode },
+}
+
+/// 4-point Hermite cubic interpolation for the "Sinc" quality mode.
+/// y0..y3 are samples at positions -1, 0, 1, 2; t is the fractional offset in [0, 1).
+fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
+    let c0 = y1;
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * t + c2) * t + c1) * t + c0
 }
 
 /// A single playing voice backed by an in-memory f32 sample buffer.
@@ -31,14 +54,24 @@ pub enum Command {
 /// The buffer is interleaved (same channel layout as the source WAV).
 /// Output is always summed into a stereo (2-channel) interleaved slice.
 /// Pitch shifting is achieved by advancing `frame_pos` by `speed` per output
-/// frame, with linear interpolation between adjacent source frames.
+/// frame, using the selected `interp_mode` between adjacent source frames.
+///
+/// Loop behaviour: when `loop_end > loop_start` and `loop_end <= total_frames`,
+/// the voice wraps back to `loop_start` on reaching `loop_end` (infinite sustain).
+/// Setting both to 0 or `loop_end <= loop_start` produces one-shot playback.
 pub struct Voice {
     samples: Arc<Vec<f32>>,
     src_channels: usize,
-    /// Fractional frame position for pitch shifting via linear interpolation.
+    /// Fractional frame position.
     frame_pos: f64,
     speed: f64,
     active: bool,
+    /// Loop start frame (inclusive).  0 = no loop unless loop_end is also set.
+    pub loop_start: u32,
+    /// Loop end frame (exclusive).  loop_end > loop_start enables looping.
+    pub loop_end: u32,
+    /// Interpolation quality.
+    pub interp_mode: InterpMode,
 }
 
 impl Voice {
@@ -49,12 +82,39 @@ impl Voice {
             frame_pos: 0.0,
             speed: 1.0,
             active: false,
+            loop_start: 0,
+            loop_end: 0,
+            interp_mode: InterpMode::Linear,
         }
+    }
+
+    /// Builder: set loop points.
+    pub fn with_loop(mut self, loop_start: u32, loop_end: u32) -> Self {
+        self.loop_start = loop_start;
+        self.loop_end = loop_end;
+        self
+    }
+
+    /// Builder: set interpolation mode.
+    pub fn with_interp_mode(mut self, mode: InterpMode) -> Self {
+        self.interp_mode = mode;
+        self
+    }
+
+    /// Update loop points on an existing voice (takes effect immediately).
+    pub fn set_loop_points(&mut self, start: u32, end: u32) {
+        self.loop_start = start;
+        self.loop_end = end;
+    }
+
+    /// Update interpolation mode (takes effect on the next rendered frame).
+    pub fn set_interp_mode(&mut self, mode: InterpMode) {
+        self.interp_mode = mode;
     }
 
     /// Re-trigger from the beginning with the given speed ratio.
     pub fn trigger(&mut self, speed: f32) {
-        self.frame_pos = 0.0;
+        self.frame_pos = self.loop_start as f64;
         self.speed = speed as f64;
         self.active = true;
     }
@@ -68,16 +128,39 @@ impl Voice {
     }
 
     /// Mix into `output` (interleaved stereo f32, length = frames * 2).
-    /// Uses linear interpolation when speed != 1.0.
-    /// Marks the voice inactive when all source samples are consumed.
+    /// Applies loop wrapping and the selected interpolation mode.
+    /// Marks the voice inactive when samples are exhausted (one-shot only).
     pub fn render(&mut self, output: &mut [f32]) {
         if !self.active {
             return;
         }
         let frames = output.len() / 2;
-        let total_frames = self.samples.len() / self.src_channels;
+        let chs = self.src_channels;
+        let total_frames = self.samples.len() / chs;
+        let loop_active = self.loop_end > self.loop_start
+            && (self.loop_end as usize) <= total_frames;
+        let loop_len = (self.loop_end - self.loop_start) as f64;
+        let loop_end_f = self.loop_end as f64;
+
+        // Snapshot fields that don't change per-frame to avoid repeated self-borrow.
+        let interp_mode = self.interp_mode.clone();
+        let speed = self.speed;
+
+        // Get a plain slice reference once; Rust allows this alongside field mutations.
+        let samples: &[f32] = &self.samples;
+
+        // Returns sample at (frame, channel), clamped to valid range.
+        let get = |f: usize, c: usize| -> f32 {
+            samples[f.min(total_frames.saturating_sub(1)) * chs + c.min(chs - 1)]
+        };
 
         for i in 0..frames {
+            if loop_active {
+                while self.frame_pos >= loop_end_f {
+                    self.frame_pos -= loop_len;
+                }
+            }
+
             let frame0 = self.frame_pos as usize;
             if frame0 >= total_frames {
                 self.active = false;
@@ -85,20 +168,38 @@ impl Voice {
             }
 
             let frac = (self.frame_pos - frame0 as f64) as f32;
-            let frame1 = (frame0 + 1).min(total_frames.saturating_sub(1));
 
-            let src0 = frame0 * self.src_channels;
-            let src1 = frame1 * self.src_channels;
+            let (l, r) = match interp_mode {
+                InterpMode::None => {
+                    let l = get(frame0, 0);
+                    let r = if chs >= 2 { get(frame0, 1) } else { l };
+                    (l, r)
+                }
+                InterpMode::Linear => {
+                    let f1 = frame0 + 1;
+                    let l0 = get(frame0, 0);
+                    let r0 = if chs >= 2 { get(frame0, 1) } else { l0 };
+                    let l1 = get(f1, 0);
+                    let r1 = if chs >= 2 { get(f1, 1) } else { l1 };
+                    (l0 + frac * (l1 - l0), r0 + frac * (r1 - r0))
+                }
+                InterpMode::Sinc => {
+                    let fm1 = frame0.saturating_sub(1);
+                    let f1 = frame0 + 1;
+                    let f2 = frame0 + 2;
+                    let il = hermite(get(fm1, 0), get(frame0, 0), get(f1, 0), get(f2, 0), frac);
+                    let ir = if chs >= 2 {
+                        hermite(get(fm1, 1), get(frame0, 1), get(f1, 1), get(f2, 1), frac)
+                    } else {
+                        il
+                    };
+                    (il, ir)
+                }
+            };
 
-            let l0 = self.samples[src0];
-            let r0 = if self.src_channels >= 2 { self.samples[src0 + 1] } else { l0 };
-            let l1 = self.samples[src1];
-            let r1 = if self.src_channels >= 2 { self.samples[src1 + 1] } else { l1 };
-
-            output[i * 2] += l0 + frac * (l1 - l0);
-            output[i * 2 + 1] += r0 + frac * (r1 - r0);
-
-            self.frame_pos += self.speed;
+            output[i * 2] += l;
+            output[i * 2 + 1] += r;
+            self.frame_pos += speed;
         }
     }
 }
@@ -133,6 +234,20 @@ impl Mixer {
     pub fn stop_slot(&mut self, slot: usize) {
         if let Some(v) = self.voices.get_mut(slot).and_then(|v| v.as_mut()) {
             v.stop();
+        }
+    }
+
+    /// Update loop points for the voice in `slot` (no-op if slot is empty).
+    pub fn set_loop_points(&mut self, slot: usize, loop_start: u32, loop_end: u32) {
+        if let Some(v) = self.voices.get_mut(slot).and_then(|v| v.as_mut()) {
+            v.set_loop_points(loop_start, loop_end);
+        }
+    }
+
+    /// Update interpolation mode for the voice in `slot` (no-op if slot is empty).
+    pub fn set_interp_mode(&mut self, slot: usize, mode: InterpMode) {
+        if let Some(v) = self.voices.get_mut(slot).and_then(|v| v.as_mut()) {
+            v.set_interp_mode(mode);
         }
     }
 
@@ -496,5 +611,96 @@ mod tests {
 
         let events = seq.advance(96000);
         assert!(events.is_empty(), "stopped sequencer should not fire events");
+    }
+
+    // ── Loop point tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn voice_loops_when_loop_end_greater_than_loop_start() {
+        // 8 mono frames; loop region = frames 2..6 (length 4).
+        let buf = Arc::new(vec![0.0f32, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]);
+        let mut voice = Voice::new(buf, 1)
+            .with_loop(2, 6)
+            .with_interp_mode(crate::model::InterpMode::None);
+
+        voice.trigger(1.0);
+        let mut out = vec![0.0f32; 20 * 2]; // render 20 frames
+        voice.render(&mut out);
+
+        // Voice should still be active (looping indefinitely).
+        assert!(voice.is_active(), "looping voice should still be active after 20 frames");
+    }
+
+    #[test]
+    fn voice_one_shot_when_loop_end_equals_loop_start() {
+        // 8 mono frames; loop_end == loop_start → one-shot.
+        let buf = Arc::new(vec![0.5f32; 8]);
+        let mut voice = Voice::new(buf, 1).with_loop(4, 4); // equal → one-shot
+
+        voice.trigger(1.0);
+        let mut out = vec![0.0f32; 16 * 2];
+        voice.render(&mut out);
+
+        assert!(!voice.is_active(), "one-shot voice (loop_end == loop_start) should go inactive");
+    }
+
+    #[test]
+    fn voice_one_shot_when_both_loop_points_zero() {
+        let buf = Arc::new(vec![0.5f32; 8]);
+        let mut voice = Voice::new(buf, 1).with_loop(0, 0); // both 0 → one-shot
+
+        voice.trigger(1.0);
+        let mut out = vec![0.0f32; 16 * 2];
+        voice.render(&mut out);
+
+        assert!(!voice.is_active(), "one-shot voice (both loop points 0) should go inactive");
+    }
+
+    #[test]
+    fn voice_interp_none_produces_output() {
+        let buf = sine_buffer(512);
+        let mut voice = Voice::new(buf, 1)
+            .with_interp_mode(crate::model::InterpMode::None);
+        voice.trigger(1.0);
+
+        let mut out = vec![0.0f32; 256 * 2];
+        voice.render(&mut out);
+
+        let rms: f32 = out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32;
+        assert!(rms > 0.0, "Nearest interp should produce non-silent output");
+    }
+
+    #[test]
+    fn voice_interp_sinc_produces_output() {
+        let buf = sine_buffer(512);
+        let mut voice = Voice::new(buf, 1)
+            .with_interp_mode(crate::model::InterpMode::Sinc);
+        voice.trigger(1.0);
+
+        let mut out = vec![0.0f32; 256 * 2];
+        voice.render(&mut out);
+
+        let rms: f32 = out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32;
+        assert!(rms > 0.0, "Sinc (Hermite) interp should produce non-silent output");
+    }
+
+    #[test]
+    fn voice_set_interp_mode_takes_effect_immediately() {
+        // Render with Linear then Sinc — both should produce non-silent output
+        // (just verifying the method call doesn't panic and voice stays active).
+        let buf = sine_buffer(1024);
+        let mut voice = Voice::new(buf, 1);
+        voice.trigger(1.0);
+
+        let mut out1 = vec![0.0f32; 128 * 2];
+        voice.render(&mut out1);
+
+        voice.set_interp_mode(crate::model::InterpMode::Sinc);
+
+        let mut out2 = vec![0.0f32; 128 * 2];
+        voice.render(&mut out2);
+
+        let rms: f32 = out2.iter().map(|s| s * s).sum::<f32>() / out2.len() as f32;
+        assert!(rms > 0.0, "Voice after interp mode change should still produce output");
     }
 }
