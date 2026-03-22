@@ -1,4 +1,4 @@
-# tracker
+# vitakt
 
 A CLI/TUI sample-based music tracker written in Rust. Arrange samples into phrases, chain phrases into sequences, and mix 8 independent tracks — all from the terminal.
 
@@ -8,13 +8,13 @@ A CLI/TUI sample-based music tracker written in Rust. Arrange samples into phras
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/ajrussellaudio/tracker/releases/latest/download/tracker-installer.sh | sh
+  https://github.com/ajrussellaudio/vitakt/releases/latest/download/vitakt-installer.sh | sh
 ```
 
 Then launch with:
 
 ```bash
-tracker
+vitakt
 ```
 
 ### Build from source
@@ -24,19 +24,19 @@ tracker
 - A system audio device (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
 
 ```bash
-git clone https://github.com/ajrussellaudio/tracker
-cd tracker
+git clone https://github.com/ajrussellaudio/vitakt
+cd vitakt
 cargo build --release
 ```
 
-The binary is at `target/release/tracker`. Run it with `cargo run --release` during development.
+The binary is at `target/release/vitakt`. Run it with `cargo run --release` during development.
 
 ## Quick Start
 
 Launch with no arguments to see the startup screen. If installed from the pre-built binary:
 
 ```bash
-tracker
+vitakt
 ```
 
 Or, when running from source:
@@ -50,7 +50,7 @@ On the startup screen, choose **New Project** to open a blank song, or **Open Fi
 To open a project directly (useful in scripts or shell aliases), pass the path as a positional argument:
 
 ```bash
-tracker path/to/my-song.trk
+vitakt path/to/my-song.trk
 # or from source:
 cargo run --release -- path/to/my-song.trk
 ```
@@ -277,7 +277,7 @@ Lists `.wav` files and subdirectories in the current browsing directory.
 
 ### Startup Screen
 
-Shown when `tracker` is launched with no arguments.
+Shown when `vitakt` is launched with no arguments.
 
 | Key | Action |
 |-----|--------|

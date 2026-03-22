@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Rename Cargo workspace and crate names from `tracker`/`tracker-core` to `vitakt`/`vitakt-core`; rename source directories accordingly (#62)
 - Rename user-visible strings, config path (`~/.config/vitakt/theme.toml`), usage messages, and internal test fixtures from `tracker` to `vitakt`; add one-time migration that copies `~/.config/tracker/theme.toml` to the new location on first run (#63)
+- Update README, CHANGELOG, and `theme.example.toml` to reflect the `vitakt` name (#64)
 
 ## [0.1.1] - 2026-03-22
 
@@ -47,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `:bpm <value>` command for setting BPM directly from the command line ([#51](https://github.com/ajrussellaudio/tracker/issues/51))
 - Status bar redesign: mode label shown first; Insert mode uses a distinct background colour ([#42](https://github.com/ajrussellaudio/tracker/issues/42))
 - Startup screen with project info and key bindings ([#40](https://github.com/ajrussellaudio/tracker/issues/40))
-- Theme system: load custom colours from `~/.config/tracker/theme.toml` ([#14](https://github.com/ajrussellaudio/tracker/issues/14))
+- Theme system: load custom colours from `~/.config/vitakt/theme.toml` ([#14](https://github.com/ajrussellaudio/tracker/issues/14))
 
 ### Changed
 
