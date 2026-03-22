@@ -210,6 +210,10 @@ struct App {
     theme: Theme,
     /// Global config loaded from `~/.config/vitakt/config.toml`.
     config: Config,
+    /// Sample browser: whether the bookmark overlay is open.
+    browser_show_bookmarks: bool,
+    /// Sample browser: cursor index within the bookmark overlay list.
+    browser_bookmark_cursor: usize,
 }
 
 impl App {
@@ -267,6 +271,8 @@ impl App {
             status_timer: None,
             theme: theme::load(),
             config: Config::load(),
+            browser_show_bookmarks: false,
+            browser_bookmark_cursor: 0,
         }
     }
 
@@ -1729,7 +1735,7 @@ fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'static
     Paragraph::new(lines).block(
         Block::default()
             .title(match app.browser_mode {
-                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  Esc: cancel]",
+                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel]",
                 BrowserMode::Project => "Open Project  [Enter: select  -/Backspace: up  Esc: cancel]",
             })
             .borders(Borders::ALL)
@@ -1977,6 +1983,44 @@ fn run_tui(
                 frame.render_widget(modal, modal_area);
             }
 
+            // Bookmark overlay (shown over the sample browser)
+            if app.browser_show_bookmarks {
+                let valid_bookmarks: Vec<String> = app
+                    .config
+                    .bookmarks
+                    .iter()
+                    .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+                    .cloned()
+                    .collect();
+                let modal_width = (size.width * 2 / 3).max(40).min(size.width);
+                let modal_height = (valid_bookmarks.len() as u16 + 4).min(size.height);
+                let x = size.width.saturating_sub(modal_width) / 2;
+                let y = size.height.saturating_sub(modal_height) / 2;
+                let modal_area = Rect::new(x, y, modal_width, modal_height);
+                frame.render_widget(Clear, modal_area);
+                let mut bm_lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                for (i, path) in valid_bookmarks.iter().enumerate() {
+                    let (prefix, style) = if i == app.browser_bookmark_cursor {
+                        ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
+                    } else {
+                        ("  ", Style::default().fg(Color::White))
+                    };
+                    bm_lines.push(ratatui::text::Line::styled(
+                        format!("{prefix}{path}"),
+                        style,
+                    ));
+                }
+                let bm_para = Paragraph::new(bm_lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Bookmarks  [Enter: go  Esc: cancel] ")
+                            .border_style(Style::default().fg(app.theme.screen_title)),
+                    )
+                    .style(Style::default().bg(Color::DarkGray));
+                frame.render_widget(bm_para, modal_area);
+            }
+
             // Status bar
             let playing = app.seq_playing.load(Ordering::Relaxed);
             let seq_step = app.current_seq_step.load(Ordering::Relaxed);
@@ -2070,7 +2114,7 @@ fn run_tui(
                 }
                 View::SampleBrowser => {
                     format!(
-                        "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  Esc: cancel  ({} entries)",
+                        "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel  ({} entries)",
                         app.browser_entries.len()
                     )
                 }
@@ -2876,38 +2920,112 @@ fn run_tui(
                     // ──────────────────────────────────────────────────────────
                     // Sample browser key handling
                     // ──────────────────────────────────────────────────────────
-                    View::SampleBrowser => match key.code {
-                        KeyCode::Esc => {
-                            app.pop_view();
-                        }
-                        KeyCode::Char(' ') => app.browser_preview_toggle(),
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if !app.browser_entries.is_empty() {
-                                app.browser_cursor =
-                                    (app.browser_cursor + 1) % app.browser_entries.len();
-                                let available = terminal
-                                    .size()
-                                    .map(|r| (r.height as usize).saturating_sub(5))
-                                    .unwrap_or(0);
-                                app.browser_clamp_scroll(available);
+                    View::SampleBrowser => {
+                        // When bookmark overlay is open, intercept all keys for it.
+                        if app.browser_show_bookmarks {
+                            let valid_bookmarks: Vec<String> = app
+                                .config
+                                .bookmarks
+                                .iter()
+                                .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+                                .cloned()
+                                .collect();
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.browser_show_bookmarks = false;
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if !valid_bookmarks.is_empty() {
+                                        app.browser_bookmark_cursor =
+                                            (app.browser_bookmark_cursor + 1)
+                                                % valid_bookmarks.len();
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if !valid_bookmarks.is_empty() {
+                                        app.browser_bookmark_cursor =
+                                            (app.browser_bookmark_cursor
+                                                + valid_bookmarks.len()
+                                                - 1)
+                                                % valid_bookmarks.len();
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(path) = valid_bookmarks.get(app.browser_bookmark_cursor) {
+                                        let dest = PathBuf::from(path);
+                                        app.browser_dir = dest.clone();
+                                        app.browser_entries = list_browser_entries(&dest);
+                                        app.browser_cursor = 0;
+                                        app.browser_scroll = 0;
+                                    }
+                                    app.browser_show_bookmarks = false;
+                                    app.browser_bookmark_cursor = 0;
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.pop_view();
+                                }
+                                KeyCode::Char(' ') => app.browser_preview_toggle(),
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if !app.browser_entries.is_empty() {
+                                        app.browser_cursor =
+                                            (app.browser_cursor + 1) % app.browser_entries.len();
+                                        let available = terminal
+                                            .size()
+                                            .map(|r| (r.height as usize).saturating_sub(5))
+                                            .unwrap_or(0);
+                                        app.browser_clamp_scroll(available);
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if !app.browser_entries.is_empty() {
+                                        app.browser_cursor =
+                                            (app.browser_cursor + app.browser_entries.len() - 1)
+                                                % app.browser_entries.len();
+                                        let available = terminal
+                                            .size()
+                                            .map(|r| (r.height as usize).saturating_sub(5))
+                                            .unwrap_or(0);
+                                        app.browser_clamp_scroll(available);
+                                    }
+                                }
+                                KeyCode::Enter => app.browser_enter(),
+                                KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
+                                KeyCode::Char('b') => {
+                                    // Open bookmark overlay; filter to existing paths first.
+                                    let valid: Vec<&String> = app
+                                        .config
+                                        .bookmarks
+                                        .iter()
+                                        .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+                                        .collect();
+                                    if valid.is_empty() {
+                                        app.set_timed_status("No bookmarks set (or none exist on disk)  —  press B to add one".to_string());
+                                    } else {
+                                        app.browser_bookmark_cursor = 0;
+                                        app.browser_show_bookmarks = true;
+                                    }
+                                }
+                                KeyCode::Char('B') => {
+                                    let dir = app.browser_dir.to_string_lossy().to_string();
+                                    if !app.config.bookmarks.contains(&dir) {
+                                        app.config.bookmarks.push(dir.clone());
+                                        if let Err(e) = app.config.save() {
+                                            app.set_timed_status(format!("Error saving bookmark: {e}"));
+                                        } else {
+                                            app.set_timed_status(format!("Bookmarked: {dir}"));
+                                        }
+                                    } else {
+                                        app.set_timed_status(format!("Already bookmarked: {dir}"));
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if !app.browser_entries.is_empty() {
-                                app.browser_cursor =
-                                    (app.browser_cursor + app.browser_entries.len() - 1)
-                                        % app.browser_entries.len();
-                                let available = terminal
-                                    .size()
-                                    .map(|r| (r.height as usize).saturating_sub(5))
-                                    .unwrap_or(0);
-                                app.browser_clamp_scroll(available);
-                            }
-                        }
-                        KeyCode::Enter => app.browser_enter(),
-                        KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
-                        _ => {}
-                    },
+                    }
 
                     // ──────────────────────────────────────────────────────────
                     // Mixer view key handling
