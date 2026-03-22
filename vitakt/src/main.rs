@@ -355,6 +355,8 @@ impl App {
                 let embedded_bytes = sample.bytes.clone();
                 let loop_start = instr.loop_start.unwrap_or(0);
                 let loop_end = instr.loop_end.unwrap_or(0);
+                let sample_start = instr.sample_start;
+                let sample_end = instr.sample_end;
                 let interp_mode = instr.interp_mode.clone();
                 let load_result = if let Some(bytes) = embedded_bytes {
                     load_wav_from_bytes(&bytes)
@@ -363,6 +365,8 @@ impl App {
                 };
                 match load_result {
                     Ok((buf, channels)) => {
+                        let (buf, loop_start, loop_end) =
+                            apply_sample_bounds(buf, channels, sample_start, sample_end, loop_start, loop_end);
                         self.send_cmd(Command::LoadVoice {
                             slot: 0,
                             samples: buf,
@@ -393,6 +397,8 @@ impl App {
             let embedded_bytes = sample.bytes.clone();
             let loop_start = instr.loop_start.unwrap_or(0);
             let loop_end = instr.loop_end.unwrap_or(0);
+            let sample_start = instr.sample_start;
+            let sample_end = instr.sample_end;
             let interp_mode = instr.interp_mode.clone();
             let load_result = if let Some(bytes) = embedded_bytes {
                 load_wav_from_bytes(&bytes)
@@ -401,6 +407,8 @@ impl App {
             };
             match load_result {
                 Ok((buf, channels)) => {
+                    let (buf, loop_start, loop_end) =
+                        apply_sample_bounds(buf, channels, sample_start, sample_end, loop_start, loop_end);
                     self.send_cmd(Command::LoadVoice {
                         slot: 0,
                         samples: buf,
@@ -889,6 +897,95 @@ impl App {
         if self.keyboard_instrument < 255 {
             self.keyboard_instrument += 1;
         }
+    }
+}
+
+/// Slice a decoded sample buffer to the region [sample_start, sample_end] and adjust
+/// loop points to be relative to the new start, clamped to the new buffer length.
+/// Returns the trimmed buffer and adjusted loop points.  `None` values default to
+/// the full buffer / no loop.
+fn apply_sample_bounds(
+    buf: Arc<Vec<f32>>,
+    channels: usize,
+    sample_start: Option<u32>,
+    sample_end: Option<u32>,
+    loop_start: u32,
+    loop_end: u32,
+) -> (Arc<Vec<f32>>, u32, u32) {
+    let total_frames = buf.len() / channels.max(1);
+    let start_frame = sample_start.unwrap_or(0) as usize;
+    let end_frame = sample_end.map(|e| e as usize).unwrap_or(total_frames);
+    let start_frame = start_frame.min(total_frames);
+    let end_frame = end_frame.clamp(start_frame, total_frames);
+    if start_frame == 0 && end_frame == total_frames {
+        return (buf, loop_start, loop_end);
+    }
+    let new_length = end_frame - start_frame;
+    let sliced = Arc::new(buf[start_frame * channels..end_frame * channels].to_vec());
+    let adj_loop_start =
+        ((loop_start as usize).saturating_sub(start_frame)).min(new_length) as u32;
+    let adj_loop_end =
+        ((loop_end as usize).saturating_sub(start_frame)).min(new_length) as u32;
+    (sliced, adj_loop_start, adj_loop_end)
+}
+
+#[cfg(test)]
+mod sample_bounds_tests {
+    use super::*;
+
+    fn make_buf(frames: usize) -> Arc<Vec<f32>> {
+        Arc::new(vec![0.5f32; frames])
+    }
+
+    #[test]
+    fn no_bounds_returns_original_buffer() {
+        let buf = make_buf(100);
+        let (out, ls, le) = apply_sample_bounds(Arc::clone(&buf), 1, None, None, 10, 50);
+        assert_eq!(out.len(), 100);
+        assert_eq!(ls, 10);
+        assert_eq!(le, 50);
+    }
+
+    #[test]
+    fn sample_start_shifts_loop_points() {
+        let buf = make_buf(200);
+        // Slice starts at frame 50; loop was at 60..80 → should become 10..30
+        let (out, ls, le) =
+            apply_sample_bounds(Arc::clone(&buf), 1, Some(50), None, 60, 80);
+        assert_eq!(out.len(), 150);
+        assert_eq!(ls, 10);
+        assert_eq!(le, 30);
+    }
+
+    #[test]
+    fn loop_end_clamped_when_exceeds_sample_end() {
+        let buf = make_buf(500);
+        // sample_end = 200, loop_end = 500 → adj_loop_end must be clamped to 200
+        let (out, ls, le) =
+            apply_sample_bounds(Arc::clone(&buf), 1, Some(0), Some(200), 10, 500);
+        assert_eq!(out.len(), 200);
+        assert_eq!(ls, 10);
+        assert_eq!(le, 200, "loop_end should be clamped to new buffer length");
+    }
+
+    #[test]
+    fn loop_points_before_start_frame_clamped_to_zero() {
+        let buf = make_buf(100);
+        // start_frame = 50, loop_start = 20 (before start) → clamped to 0
+        let (out, ls, le) =
+            apply_sample_bounds(Arc::clone(&buf), 1, Some(50), None, 20, 80);
+        assert_eq!(out.len(), 50);
+        assert_eq!(ls, 0);
+        assert_eq!(le, 30);
+    }
+
+    #[test]
+    fn multichannel_buffer_sliced_correctly() {
+        // 100 stereo frames = 200 samples; slice frames 10..40 = 30 stereo frames = 60 samples
+        let buf = Arc::new(vec![0.5f32; 200]);
+        let (out, _, _) =
+            apply_sample_bounds(Arc::clone(&buf), 2, Some(10), Some(40), 0, 0);
+        assert_eq!(out.len(), 60);
     }
 }
 

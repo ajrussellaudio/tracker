@@ -30,6 +30,7 @@ mod tests {
             interp_mode: InterpMode::Linear,
             volume: 0.9,
             pan: -0.1,
+            ..Default::default()
         });
         let mut phrase = Phrase::default();
         phrase.steps[0] = Step {
@@ -176,6 +177,7 @@ mod packed_tests {
             interp_mode: InterpMode::None,
             volume: 1.0,
             pan: 0.0,
+            ..Default::default()
         });
 
         let failures =
@@ -215,6 +217,7 @@ mod packed_tests {
             interp_mode: InterpMode::None,
             volume: 1.0,
             pan: 0.0,
+            ..Default::default()
         });
 
         let failures =

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `vitakt-core::waveform::decode_and_downsample`: decodes a `.wav` file to a normalised `f32` amplitude buffer, mixes down to mono, and downsamples to a target display width using peak-per-window (#74)
+- `Instrument` gains `sample_start` and `sample_end` fields (`Option<u32>`); audio playback now honours these boundaries, slicing the sample buffer accordingly; loop points are adjusted relative to the new start; song format bumped to v4 with automatic migration from v3 (#75)
 - Scrolling viewport in the sample browser: long directory listings now scroll so the cursor is always visible; viewport height is derived from the terminal size at draw time (#72)
 - `..` parent directory entry appears at the top of every non-root directory in the sample browser; pressing Enter on it navigates up just like Backspace (#73)
 
