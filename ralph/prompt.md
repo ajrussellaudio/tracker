@@ -190,16 +190,38 @@ If either check fails and you cannot fix it after a genuine effort, **do not ope
 - Revert any broken changes (`git checkout -- .` or `git stash`)
 - Move on to Step 5 and treat this issue as skipped
 
-### Step 5 — Commit and open a PR
+### Step 5 — Update CHANGELOG and commit
 
 If the checks passed:
 
-- Commit your changes using **conventional commits** (e.g. `feat:`, `fix:`, `chore:`, `refactor:`).
-- Open a GitHub PR from `ralph/issue-<N>` targeting `main`. The PR body should:
+**Update `CHANGELOG.md`** in the repo root before committing:
+
+- If `CHANGELOG.md` does not exist, create it with this header:
+  ```
+  # Changelog
+
+  All notable changes to this project will be documented in this file.
+
+  The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+  ## [Unreleased]
+  ```
+- Add an entry under `## [Unreleased]` using the appropriate subsection (`### Added`, `### Changed`, `### Fixed`, `### Removed`). One concise bullet per logical change. Include the issue number in parentheses, e.g.:
+  ```
+  ### Added
+  - Quit confirmation modal when there are unsaved changes (#53)
+  ```
+- If `## [Unreleased]` already exists, append to the correct subsection (or create it if it doesn't exist yet under `[Unreleased]`). Do not create a new `## [Unreleased]` block.
+- Do not add version headers or dates — those are added when a release is tagged.
+
+**Commit** all changes (code + CHANGELOG) together using **conventional commits** (e.g. `feat:`, `fix:`, `chore:`, `refactor:`).
+
+**Open a GitHub PR** from `ralph/issue-<N>` targeting `main`. The PR body should:
   - Reference the issue with `Closes #<N>`
   - Summarise what was implemented
   - Note any limitations or known rough edges
-- Do **not** close the GitHub issue manually — it will be closed automatically when the PR is merged.
+
+Do **not** close the GitHub issue manually — it will be closed automatically when the PR is merged.
 
 ### Step 6 — Stop
 
