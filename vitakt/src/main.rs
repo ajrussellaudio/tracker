@@ -563,6 +563,66 @@ impl App {
         }
     }
 
+    /// Handle the `b` key in the sample browser: open the bookmark overlay if valid bookmarks
+    /// exist, otherwise show a hint in the status bar.
+    fn browser_try_open_bookmarks(&mut self) {
+        let has_valid = self
+            .config
+            .bookmarks
+            .iter()
+            .any(|p| std::path::Path::new(p.as_str()).is_dir());
+        if has_valid {
+            self.browser_bookmark_cursor = 0;
+            self.browser_show_bookmarks = true;
+        } else {
+            self.set_timed_status(
+                "No bookmarks set (or none exist on disk)  —  press B to add one".to_string(),
+            );
+        }
+    }
+
+    /// Handle the `B` key in the sample browser: append the current directory to
+    /// `config.bookmarks` (deduplicated) and persist.
+    fn browser_add_bookmark(&mut self) {
+        let dir = self.browser_dir.to_string_lossy().to_string();
+        if !self.config.bookmarks.contains(&dir) {
+            self.config.bookmarks.push(dir.clone());
+            if let Err(e) = self.config.save() {
+                self.set_timed_status(format!("Error saving bookmark: {e}"));
+            } else {
+                self.set_timed_status(format!("Bookmarked: {dir}"));
+            }
+        } else {
+            self.set_timed_status(format!("Already bookmarked: {dir}"));
+        }
+    }
+
+    /// Handle Enter on the bookmark overlay: navigate to the selected bookmark and close the
+    /// overlay.
+    fn browser_overlay_enter(&mut self) {
+        let valid_bookmarks: Vec<String> = self
+            .config
+            .bookmarks
+            .iter()
+            .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+            .cloned()
+            .collect();
+        if let Some(path) = valid_bookmarks.get(self.browser_bookmark_cursor) {
+            let dest = PathBuf::from(path);
+            self.browser_dir = dest.clone();
+            self.browser_entries = list_browser_entries(&dest);
+            self.browser_cursor = 0;
+            self.browser_scroll = 0;
+        }
+        self.browser_show_bookmarks = false;
+        self.browser_bookmark_cursor = 0;
+    }
+
+    /// Handle Esc on the bookmark overlay: close without navigating.
+    fn browser_overlay_esc(&mut self) {
+        self.browser_show_bookmarks = false;
+    }
+
     /// Adjust `browser_scroll` so that `browser_cursor` stays within the visible window.
     /// `available` is the number of entry rows visible (after accounting for borders and header).
     fn browser_clamp_scroll(&mut self, available: usize) {
@@ -2923,43 +2983,31 @@ fn run_tui(
                     View::SampleBrowser => {
                         // When bookmark overlay is open, intercept all keys for it.
                         if app.browser_show_bookmarks {
-                            let valid_bookmarks: Vec<String> = app
+                            let valid_len = app
                                 .config
                                 .bookmarks
                                 .iter()
                                 .filter(|p| std::path::Path::new(p.as_str()).is_dir())
-                                .cloned()
-                                .collect();
+                                .count();
                             match key.code {
                                 KeyCode::Esc => {
-                                    app.browser_show_bookmarks = false;
+                                    app.browser_overlay_esc();
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
-                                    if !valid_bookmarks.is_empty() {
+                                    if valid_len > 0 {
                                         app.browser_bookmark_cursor =
-                                            (app.browser_bookmark_cursor + 1)
-                                                % valid_bookmarks.len();
+                                            (app.browser_bookmark_cursor + 1) % valid_len;
                                     }
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
-                                    if !valid_bookmarks.is_empty() {
+                                    if valid_len > 0 {
                                         app.browser_bookmark_cursor =
-                                            (app.browser_bookmark_cursor
-                                                + valid_bookmarks.len()
-                                                - 1)
-                                                % valid_bookmarks.len();
+                                            (app.browser_bookmark_cursor + valid_len - 1)
+                                                % valid_len;
                                     }
                                 }
                                 KeyCode::Enter => {
-                                    if let Some(path) = valid_bookmarks.get(app.browser_bookmark_cursor) {
-                                        let dest = PathBuf::from(path);
-                                        app.browser_dir = dest.clone();
-                                        app.browser_entries = list_browser_entries(&dest);
-                                        app.browser_cursor = 0;
-                                        app.browser_scroll = 0;
-                                    }
-                                    app.browser_show_bookmarks = false;
-                                    app.browser_bookmark_cursor = 0;
+                                    app.browser_overlay_enter();
                                 }
                                 _ => {}
                             }
@@ -2995,32 +3043,10 @@ fn run_tui(
                                 KeyCode::Enter => app.browser_enter(),
                                 KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
                                 KeyCode::Char('b') => {
-                                    // Open bookmark overlay; filter to existing paths first.
-                                    let valid: Vec<&String> = app
-                                        .config
-                                        .bookmarks
-                                        .iter()
-                                        .filter(|p| std::path::Path::new(p.as_str()).is_dir())
-                                        .collect();
-                                    if valid.is_empty() {
-                                        app.set_timed_status("No bookmarks set (or none exist on disk)  —  press B to add one".to_string());
-                                    } else {
-                                        app.browser_bookmark_cursor = 0;
-                                        app.browser_show_bookmarks = true;
-                                    }
+                                    app.browser_try_open_bookmarks();
                                 }
                                 KeyCode::Char('B') => {
-                                    let dir = app.browser_dir.to_string_lossy().to_string();
-                                    if !app.config.bookmarks.contains(&dir) {
-                                        app.config.bookmarks.push(dir.clone());
-                                        if let Err(e) = app.config.save() {
-                                            app.set_timed_status(format!("Error saving bookmark: {e}"));
-                                        } else {
-                                            app.set_timed_status(format!("Bookmarked: {dir}"));
-                                        }
-                                    } else {
-                                        app.set_timed_status(format!("Already bookmarked: {dir}"));
-                                    }
+                                    app.browser_add_bookmark();
                                 }
                                 _ => {}
                             }
@@ -4425,5 +4451,114 @@ mod tests {
         std::fs::remove_file(dir.join("test.wav")).ok();
         std::fs::remove_dir(&dir).ok();
     }
+
+    #[test]
+    fn browser_b_key_with_no_bookmarks_shows_status() {
+        let mut app = make_app();
+        app.config.bookmarks.clear();
+        app.browser_try_open_bookmarks();
+        assert!(!app.browser_show_bookmarks, "overlay must stay closed");
+        assert!(
+            app.status.contains("No bookmarks"),
+            "status should hint about missing bookmarks, got: {}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn browser_b_key_with_valid_bookmarks_opens_overlay() {
+        let dir = std::env::temp_dir().join("vitakt_bookmark_open_test");
+        std::fs::create_dir_all(&dir).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dir.to_string_lossy().to_string()];
+        app.browser_bookmark_cursor = 5; // pre-set to non-zero
+        app.browser_try_open_bookmarks();
+
+        assert!(app.browser_show_bookmarks, "overlay must open with valid bookmark");
+        assert_eq!(app.browser_bookmark_cursor, 0, "cursor must reset to 0");
+
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn browser_capital_b_adds_and_deduplicates_bookmark() {
+        let dir = std::env::temp_dir().join("vitakt_add_bookmark_test");
+        std::fs::create_dir_all(&dir).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks.clear();
+        app.browser_dir = dir.clone();
+
+        // First press — should add the bookmark.
+        app.browser_add_bookmark();
+        assert_eq!(app.config.bookmarks.len(), 1, "bookmark should be added");
+        assert_eq!(app.config.bookmarks[0], dir.to_string_lossy().as_ref());
+        assert!(
+            app.status.starts_with("Bookmarked:") || app.status.starts_with("Error"),
+            "status should confirm bookmark, got: {}",
+            app.status
+        );
+
+        // Second press — should deduplicate.
+        app.browser_add_bookmark();
+        assert_eq!(app.config.bookmarks.len(), 1, "duplicate must not be added");
+        assert!(
+            app.status.contains("Already bookmarked"),
+            "status should say already bookmarked, got: {}",
+            app.status
+        );
+
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn browser_overlay_enter_navigates_to_bookmark_dir() {
+        let dest = std::env::temp_dir().join("vitakt_overlay_enter_test");
+        std::fs::create_dir_all(&dest).ok();
+        std::fs::write(dest.join("snare.wav"), b"RIFF").ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dest.to_string_lossy().to_string()];
+        app.browser_show_bookmarks = true;
+        app.browser_bookmark_cursor = 0;
+        let original_dir = app.browser_dir.clone();
+
+        app.browser_overlay_enter();
+
+        assert_eq!(app.browser_dir, dest, "browser_dir must update to selected bookmark");
+        assert_ne!(app.browser_dir, original_dir);
+        assert_eq!(app.browser_cursor, 0, "cursor must reset to 0");
+        assert_eq!(app.browser_scroll, 0, "scroll must reset to 0");
+        assert!(!app.browser_show_bookmarks, "overlay must close after Enter");
+        assert_eq!(app.browser_bookmark_cursor, 0, "bookmark cursor must reset");
+        let has_wav = app
+            .browser_entries
+            .iter()
+            .any(|e| matches!(e, BrowserEntry::Wav(n) if n == "snare.wav"));
+        assert!(has_wav, "browser entries should reflect the new directory");
+
+        std::fs::remove_file(dest.join("snare.wav")).ok();
+        std::fs::remove_dir(&dest).ok();
+    }
+
+    #[test]
+    fn browser_overlay_esc_closes_without_navigating() {
+        let dest = std::env::temp_dir().join("vitakt_overlay_esc_test");
+        std::fs::create_dir_all(&dest).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dest.to_string_lossy().to_string()];
+        app.browser_show_bookmarks = true;
+        let original_dir = app.browser_dir.clone();
+
+        app.browser_overlay_esc();
+
+        assert!(!app.browser_show_bookmarks, "overlay must close on Esc");
+        assert_eq!(app.browser_dir, original_dir, "browser_dir must not change on Esc");
+
+        std::fs::remove_dir(&dest).ok();
+    }
 }
+
 
