@@ -750,11 +750,15 @@ impl App {
             } else {
                 match rest.parse::<f32>() {
                     Ok(bpm) => {
-                        let clamped = bpm.clamp(20.0, 999.0);
-                        self.record("set BPM");
-                        self.song.bpm = clamped;
-                        self.send_cmd(Command::SetBpm(clamped));
-                        self.set_timed_status(format!("BPM set to {clamped:.1}"));
+                        if !bpm.is_finite() {
+                            self.status = format!("Invalid BPM value: '{rest}' — expected a number");
+                        } else {
+                            let clamped = bpm.clamp(20.0, 999.0);
+                            self.record("set BPM");
+                            self.song.bpm = clamped;
+                            self.send_cmd(Command::SetBpm(clamped));
+                            self.set_timed_status(format!("BPM set to {clamped:.1}"));
+                        }
                     }
                     Err(_) => {
                         self.status = format!("Invalid BPM value: '{rest}' — expected a number");
@@ -3304,6 +3308,16 @@ mod tests {
         assert!((app.song.bpm - 180.0).abs() < 1e-4);
         app.do_undo();
         assert!((app.song.bpm - original_bpm).abs() < 1e-4, "undo should restore original BPM");
+    }
+
+    #[test]
+    fn execute_bpm_nan_shows_error_and_does_not_corrupt_bpm() {
+        let mut app = make_app();
+        let original_bpm = app.song.bpm;
+        app.cmd_buf = "bpm nan".to_string();
+        app.execute_command();
+        assert!(app.status.contains("Invalid BPM"), "expected error, got: {}", app.status);
+        assert_eq!(app.song.bpm, original_bpm, "NaN must not corrupt song.bpm");
     }
 
     #[test]
