@@ -159,11 +159,17 @@ PR `#<N>` has already had two rounds of review and fixes. Approve it uncondition
 
 ## Merge Mode
 
-PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Merge it and rebase all downstream branches.
+PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verify CI is green.
 
-1. Merge using a merge commit (never squash — this preserves SHAs for the downstream chain):
+1. Check that all CI checks on the PR have passed:
    ```bash
-   gh pr merge <N> --merge
+   gh pr checks <N> < /dev/null
+   ```
+   Look at the output. If any check is failed or still in progress, **do not merge**. Instead, post a comment explaining that CI is failing and stop. The loop will restart and re-enter Review or Fix Mode as appropriate.
+
+2. Merge using a merge commit (never squash — this preserves SHAs for the downstream chain):
+   ```bash
+   gh pr merge <N> --merge < /dev/null
    ```
 2. Pull latest main:
    ```bash
