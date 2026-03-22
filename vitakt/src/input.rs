@@ -979,6 +979,7 @@ fn handle_waveform_editor(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Esc => {
             app.pop_view();
         }
+        KeyCode::Char(' ') => app.waveform_preview_toggle(),
         _ => {}
     }
     false

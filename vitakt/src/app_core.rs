@@ -216,6 +216,49 @@ impl App {
         }
     }
 
+    /// Handle Space in the waveform editor: toggle preview playback from `sample_start`.
+    pub(crate) fn waveform_preview_toggle(&mut self) {
+        self.is_previewing = self.preview_playing.load(Ordering::Relaxed);
+
+        if self.is_previewing {
+            self.send_cmd(Command::StopPreview);
+            self.preview_playing.store(false, Ordering::Relaxed);
+            self.is_previewing = false;
+            return;
+        }
+
+        let idx = self.active_instrument;
+        let instr = match self.song.instruments.get(idx) {
+            Some(i) => i,
+            None => return,
+        };
+        let sample = match &instr.sample {
+            Some(s) => s,
+            None => return,
+        };
+        let sample_start = instr.sample_start;
+        let sample_end = instr.sample_end;
+        let load_result = if let Some(bytes) = &sample.bytes {
+            load_wav_from_bytes(bytes)
+        } else {
+            load_wav(&sample.path)
+        };
+
+        match load_result {
+            Ok((samples, channels)) => {
+                let total_frames = samples.len() / channels.max(1);
+                let start = sample_start.unwrap_or(0) as usize * channels;
+                let end = (sample_end.unwrap_or(total_frames as u32) as usize * channels)
+                    .min(samples.len());
+                let sliced: Arc<Vec<f32>> = Arc::new(samples[start..end].to_vec());
+                self.send_cmd(Command::PreviewSample { samples: sliced, channels });
+                self.preview_playing.store(true, Ordering::Relaxed);
+                self.is_previewing = true;
+            }
+            Err(e) => self.set_timed_status(format!("Preview error: {e}")),
+        }
+    }
+
     /// Reload sample from disk for the active instrument and send a LoadVoice command.
     pub(crate) fn reload_instrument_sample(&mut self) {
         let idx = self.active_instrument;

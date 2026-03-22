@@ -618,8 +618,10 @@ pub fn render_waveform_editor(app: &App, width: usize, height: usize) -> Vec<rat
     let mut lines = render_waveform(&app.waveform_samples, width, waveform_height, &handles);
 
     // Info line
+    let is_playing = app.preview_playing.load(std::sync::atomic::Ordering::Relaxed);
+    let preview_label = if is_playing { "  ▶ previewing" } else { "" };
     let info = format!(
-        " Active: {handle_label}  |  non-destructive — .wav unchanged"
+        " Active: {handle_label}  |  non-destructive — .wav unchanged{preview_label}"
     );
     lines.push(ratatui::text::Line::styled(
         info,
