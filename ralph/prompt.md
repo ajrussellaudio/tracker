@@ -15,7 +15,7 @@ Before doing anything else, make sure the workspace is up to date:
 Use sub-agents for the following orientation tasks so you don't burn your primary context window:
 
 - Run `git log --oneline -20` to see recent commits.
-- Use the GitHub MCP tools to list all open issues in the repo (see `project.md`), excluding any issues labelled `prd`.
+- Use the GitHub MCP tools to list all open issues in the repo (see `project.md`), excluding any issues labelled `prd` or `blocked`.
 
 ## Step 2 — Decide what to work on
 
@@ -39,7 +39,7 @@ Choose a mode based on this table:
 
 ### If there are no open ralph PRs
 
-- List all open issues excluding any labelled `prd`.
+- List all open issues excluding any labelled `prd` or `blocked`.
 - Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one.
 - Proceed to **[Implement Mode](#implement-mode)**.
 - If no open issues remain, proceed to **[Step 7](#step-7--decide-what-comes-next)**.
@@ -231,10 +231,10 @@ Do **not** close the GitHub issue manually — it will be closed automatically w
 
 ## Step 7 — Decide what comes next
 
-- List all open issues excluding any labelled `prd`.
+- List all open issues excluding any labelled `prd` or `blocked`.
 - List all open `ralph/issue-*` PRs.
 
-- **If there are no open issues (excluding `prd`-labelled issues) AND no open ralph PRs:** emit this token on a line by itself and stop:
+- **If there are no open issues (excluding `prd`- or `blocked`-labelled issues) AND no open ralph PRs:** emit this token on a line by itself and stop:
 
   <promise>COMPLETE</promise>
 
@@ -248,7 +248,7 @@ Do **not** close the GitHub issue manually — it will be closed automatically w
 - **`<promise>COMPLETE</promise>` may only be emitted from Step 7.** Never emit it from inside a mode (Implement, Review, Fix, Merge, etc.).
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
-- **Never touch `prd`-labelled issues.** Do not implement, close, or comment on them.
+- **Never touch `prd`- or `blocked`-labelled issues.** Do not implement, close, or comment on them.
 - **Never commit directly to `main`.** Always use a `ralph/issue-<N>` branch.
 - **Always merge with `--merge`, never `--squash`.** Squash breaks the downstream rebase chain.
 
