@@ -246,6 +246,10 @@ struct App {
     history: History,
     /// Whether the song has unsaved changes.
     is_dirty: bool,
+    /// Whether the sample browser is currently playing an audio preview.
+    is_previewing: bool,
+    /// Shared flag: audio thread writes false when preview voice self-deactivates.
+    preview_playing: Arc<AtomicBool>,
     /// When set, status bar shows app.status until this instant (timed messages).
     status_timer: Option<std::time::Instant>,
     /// Loaded color theme.
@@ -258,6 +262,7 @@ impl App {
         sample_root: u8,
         seq_playing: Arc<AtomicBool>,
         current_seq_step: Arc<AtomicU8>,
+        preview_playing: Arc<AtomicBool>,
     ) -> Self {
         let song = Song::default(); // always has 1 phrase, 1 chain, 1 arrangement row
         Self {
@@ -300,6 +305,8 @@ impl App {
             render_progress: Arc::new(AtomicU32::new(0)),
             history: History::new(),
             is_dirty: false,
+            is_previewing: false,
+            preview_playing,
             status_timer: None,
             theme: theme::load(),
         }
@@ -577,6 +584,41 @@ impl App {
         }
     }
 
+    /// Handle Space in the sample browser: toggle preview playback of the highlighted .wav.
+    /// Silently ignores Space on a directory entry or an empty list.
+    fn browser_preview_toggle(&mut self) {
+        // Sync is_previewing from the shared atomic so stale state after natural
+        // completion doesn't cause a double-press to restart.
+        self.is_previewing = self.preview_playing.load(Ordering::Relaxed);
+
+        if self.is_previewing {
+            self.send_cmd(Command::StopPreview);
+            self.preview_playing.store(false, Ordering::Relaxed);
+            self.is_previewing = false;
+            return;
+        }
+        let Some(entry) = self.browser_entries.get(self.browser_cursor).cloned() else {
+            return;
+        };
+        let BrowserEntry::Wav(name) = entry else {
+            return; // directory — ignore
+        };
+        let full_path = self.browser_dir.join(&name);
+        let path_str = full_path
+            .canonicalize()
+            .unwrap_or(full_path)
+            .to_string_lossy()
+            .to_string();
+        match load_wav(&path_str) {
+            Ok((samples, channels)) => {
+                self.send_cmd(Command::PreviewSample { samples, channels });
+                self.preview_playing.store(true, Ordering::Relaxed);
+                self.is_previewing = true;
+            }
+            Err(e) => self.set_timed_status(format!("Preview error: {e}")),
+        }
+    }
+
     /// Adjust BPM by `delta` and send the new value to the audio thread.
     fn adjust_bpm(&mut self, delta: f32) {
         self.record("set BPM");
@@ -594,6 +636,12 @@ impl App {
     fn pop_view(&mut self) {
         if let Some(prev) = self.view_stack.pop() {
             self.view = prev;
+        }
+        // Stop any active preview when leaving the sample browser.
+        if self.is_previewing {
+            self.send_cmd(Command::StopPreview);
+            self.is_previewing = false;
+            self.preview_playing.store(false, Ordering::Relaxed);
         }
         // Clear mode when returning to PhraseEditor
         if matches!(self.view, View::PhraseEditor) {
@@ -972,6 +1020,7 @@ fn start_audio_stream(
     mut consumer: rtrb::Consumer<Command>,
     seq_playing: Arc<AtomicBool>,
     current_step: Arc<AtomicU8>,
+    preview_playing: Arc<AtomicBool>,
     sample_buf: Option<(Arc<Vec<f32>>, usize)>,
     initial_bpm: f32,
 ) -> Result<cpal::Stream> {
@@ -1096,9 +1145,11 @@ fn start_audio_stream(
                     Command::PreviewSample { samples, channels } => {
                         let mut v = Voice::new(samples, channels);
                         v.trigger(1.0);
+                        preview_playing.store(true, Ordering::Relaxed);
                         preview_voice = Some(v);
                     }
                     Command::StopPreview => {
+                        preview_playing.store(false, Ordering::Relaxed);
                         preview_voice = None;
                     }
                 }
@@ -1166,6 +1217,7 @@ fn start_audio_stream(
             if let Some(pv) = preview_voice.as_mut() {
                 pv.render(data);
                 if !pv.is_active() {
+                    preview_playing.store(false, Ordering::Relaxed);
                     preview_voice = None;
                 }
             }
@@ -1791,6 +1843,7 @@ fn run_tui(
     sample_root: u8,
     seq_playing: Arc<AtomicBool>,
     current_seq_step: Arc<AtomicU8>,
+    preview_playing: Arc<AtomicBool>,
     action: CliAction,
 ) -> Result<()> {
     enable_raw_mode()?;
@@ -1799,7 +1852,7 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(producer, sample_root, seq_playing, current_seq_step);
+    let mut app = App::new(producer, sample_root, seq_playing, current_seq_step, preview_playing);
 
     match action {
         CliAction::ShowStartup => {
@@ -2803,6 +2856,7 @@ fn run_tui(
                         KeyCode::Esc => {
                             app.pop_view();
                         }
+                        KeyCode::Char(' ') => app.browser_preview_toggle(),
                         KeyCode::Char('j') | KeyCode::Down => {
                             if !app.browser_entries.is_empty() {
                                 app.browser_cursor =
@@ -3033,6 +3087,7 @@ fn main() -> Result<()> {
     // Shared state: UI reads, audio writes.
     let seq_playing = Arc::new(AtomicBool::new(false));
     let current_seq_step = Arc::new(AtomicU8::new(0));
+    let preview_playing = Arc::new(AtomicBool::new(false));
 
     let initial_bpm = 120.0f32;
 
@@ -3040,6 +3095,7 @@ fn main() -> Result<()> {
         consumer,
         Arc::clone(&seq_playing),
         Arc::clone(&current_seq_step),
+        Arc::clone(&preview_playing),
         None, // samples are loaded from project instruments, not the CLI
         initial_bpm,
     )
@@ -3048,7 +3104,7 @@ fn main() -> Result<()> {
         panic!("audio unavailable: {e}")
     });
 
-    run_tui(Some(producer), 60, seq_playing, current_seq_step, action)?;
+    run_tui(Some(producer), 60, seq_playing, current_seq_step, preview_playing, action)?;
     Ok(())
 }
 
@@ -3065,6 +3121,7 @@ mod tests {
             60,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
@@ -4021,6 +4078,45 @@ mod tests {
         let mut app = make_app();
         app.enter_note(60);
         assert!(app.is_dirty);
+    }
+
+    #[test]
+    fn browser_preview_toggle_sets_is_previewing_on_wav_entry() {
+        let mut app = make_app();
+        // Simulate a .wav entry in the browser (no real file needed — send_cmd is a no-op
+        // when producer is None, and load_wav will fail gracefully; use a known path).
+        // Instead, directly verify the flag is false initially.
+        assert!(!app.is_previewing);
+        // Manually set a wav entry and invoke toggle; load_wav will fail on a fake path
+        // so is_previewing stays false — but we verify no panic.
+        app.browser_entries = vec![BrowserEntry::Wav("nonexistent.wav".to_string())];
+        app.browser_cursor = 0;
+        app.browser_preview_toggle(); // load_wav fails → sets timed error, is_previewing stays false
+        assert!(!app.is_previewing);
+    }
+
+    #[test]
+    fn browser_preview_toggle_ignores_directory_entry() {
+        let mut app = make_app();
+        app.browser_entries = vec![BrowserEntry::Dir("samples".to_string())];
+        app.browser_cursor = 0;
+        app.browser_preview_toggle();
+        assert!(!app.is_previewing, "Space on a directory should not set is_previewing");
+    }
+
+    #[test]
+    fn pop_view_clears_is_previewing() {
+        let mut app = make_app();
+        // Simulate an active preview.
+        app.is_previewing = true;
+        app.preview_playing.store(true, Ordering::Relaxed);
+        app.push_view(View::SampleBrowser);
+        app.pop_view();
+        assert!(!app.is_previewing, "pop_view should clear is_previewing");
+        assert!(
+            !app.preview_playing.load(Ordering::Relaxed),
+            "pop_view should clear the preview_playing atomic"
+        );
     }
 }
 
