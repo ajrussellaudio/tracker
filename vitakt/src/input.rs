@@ -8,7 +8,6 @@ use crate::render::{
     MIXER_FIELD_VOL,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::sync::atomic::Ordering;
 use vitakt_core::{
     audio::Command,
     model::{ChainSlot, FxCommand, STEPS_PER_PHRASE, TRACKS},

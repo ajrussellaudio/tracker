@@ -1,37 +1,25 @@
 use anyhow::Result;
-use ratatui::{style::Color, Terminal};
 use rtrb::RingBuffer;
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+use std::sync::{
+        atomic::{AtomicBool, AtomicU8},
         Arc,
-    },
-};
-use vitakt_core::{
-    audio::Command,
-    model::{ChainSlot, InterpMode, TRACKS},
-};
+    };
+use vitakt_core::audio::Command;
 
 mod app;
-use app::*;
 mod braille;
 mod app_core;
 mod audio_stream;
 use audio_stream::start_audio_stream;
 mod browser;
-pub(crate) use browser::{list_browser_entries, list_browser_entries_ext};
 mod cli;
-use cli::{parse_args, CliAction};
+use cli::parse_args;
 mod commands;
-pub(crate) use commands::instr_editor_increment;
 mod config;
 mod history;
 mod input;
 mod note_utils;
-use note_utils::*;
 mod render;
-use render::*;
 mod theme;
 #[cfg(test)]
 use theme::Theme;
