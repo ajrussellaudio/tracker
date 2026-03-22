@@ -975,11 +975,27 @@ fn handle_mixer(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_waveform_editor(app: &mut App, key: KeyEvent) -> bool {
+    use crossterm::event::KeyModifiers;
     match key.code {
         KeyCode::Esc => {
             app.pop_view();
         }
         KeyCode::Char(' ') => app.waveform_preview_toggle(),
+        KeyCode::Tab => app.waveform_cycle_handle(true),
+        KeyCode::BackTab => app.waveform_cycle_handle(false),
+        KeyCode::Left | KeyCode::Right => {
+            let sign: i64 = if key.code == KeyCode::Right { 1 } else { -1 };
+            let step: i64 = if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.modifiers.contains(KeyModifiers::SHIFT)
+            {
+                1
+            } else if key.modifiers.contains(KeyModifiers::SHIFT) {
+                1024
+            } else {
+                256
+            };
+            app.waveform_move_handle(sign * step);
+        }
         _ => {}
     }
     false

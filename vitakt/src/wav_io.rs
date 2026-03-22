@@ -53,11 +53,34 @@ pub fn load_wav_from_bytes(bytes: &[u8]) -> Result<(Arc<Vec<f32>>, usize)> {
     decode_wav_reader(&mut reader)
 }
 
+/// Like [`load_wav`] but also returns the sample rate in Hz.
+pub fn load_wav_with_rate(path: &str) -> Result<(Arc<Vec<f32>>, usize, u32)> {
+    let mut reader =
+        hound::WavReader::open(path).with_context(|| format!("failed to open WAV: {path}"))?;
+    decode_wav_reader_with_rate(&mut reader)
+}
+
+/// Like [`load_wav_from_bytes`] but also returns the sample rate in Hz.
+pub fn load_wav_from_bytes_with_rate(bytes: &[u8]) -> Result<(Arc<Vec<f32>>, usize, u32)> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut reader =
+        hound::WavReader::new(cursor).context("failed to parse embedded WAV bytes")?;
+    decode_wav_reader_with_rate(&mut reader)
+}
+
 pub fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
     reader: &mut hound::WavReader<R>,
 ) -> Result<(Arc<Vec<f32>>, usize)> {
+    let (samples, channels, _) = decode_wav_reader_with_rate(reader)?;
+    Ok((samples, channels))
+}
+
+pub fn decode_wav_reader_with_rate<R: std::io::Read + std::io::Seek>(
+    reader: &mut hound::WavReader<R>,
+) -> Result<(Arc<Vec<f32>>, usize, u32)> {
     let spec = reader.spec();
     let channels = spec.channels as usize;
+    let sample_rate = spec.sample_rate;
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader
             .samples::<f32>()
@@ -78,5 +101,5 @@ pub fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
             }
         }
     };
-    Ok((Arc::new(samples), channels))
+    Ok((Arc::new(samples), channels, sample_rate))
 }

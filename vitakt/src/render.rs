@@ -607,21 +607,43 @@ pub fn render_waveform_editor(app: &App, width: usize, height: usize) -> Vec<rat
     };
 
     let handle_label = match app.waveform_active_handle {
-        ActiveHandle::SampleStart => "SampleStart",
-        ActiveHandle::SampleEnd   => "SampleEnd",
-        ActiveHandle::LoopStart   => "LoopStart",
-        ActiveHandle::LoopEnd     => "LoopEnd",
+        ActiveHandle::SampleStart => "Sample Start",
+        ActiveHandle::SampleEnd   => "Sample End",
+        ActiveHandle::LoopStart   => "Loop Start",
+        ActiveHandle::LoopEnd     => "Loop End",
     };
+
+    let raw_frames_u32 = raw_frames as u32;
+    let active_pos = match app.waveform_active_handle {
+        ActiveHandle::SampleStart => instr.sample_start.unwrap_or(0),
+        ActiveHandle::SampleEnd   => instr.sample_end.unwrap_or(raw_frames_u32),
+        ActiveHandle::LoopStart   => instr.loop_start.unwrap_or(0),
+        ActiveHandle::LoopEnd     => instr.loop_end.unwrap_or(raw_frames_u32),
+    };
+
+    let fmt_time = |frames: u32, rate: u32| -> String {
+        let rate = rate.max(1);
+        let total_ms = (frames as u64 * 1000) / rate as u64;
+        let ms = total_ms % 1000;
+        let total_s = total_ms / 1000;
+        let s = total_s % 60;
+        let m = total_s / 60;
+        format!("{m:02}:{s:02}.{ms:03}")
+    };
+
+    let sr = app.waveform_sample_rate;
+    let pos_time = fmt_time(active_pos, sr);
+    let total_time = fmt_time(raw_frames_u32, sr);
 
     // Reserve the last row for the info line.
     let waveform_height = height.saturating_sub(1);
     let mut lines = render_waveform(&app.waveform_samples, width, waveform_height, &handles);
 
-    // Info line
+    // Info line: "Sample Start  |  pos: 4096  (00:00.093)  /  88200 total  (00:02.000)"
     let is_playing = app.preview_playing.load(std::sync::atomic::Ordering::Relaxed);
-    let preview_label = if is_playing { "  ▶ previewing" } else { "" };
+    let preview_label = if is_playing { "  ▶" } else { "" };
     let info = format!(
-        " Active: {handle_label}  |  non-destructive — .wav unchanged{preview_label}"
+        " {handle_label}  |  pos: {active_pos}  ({pos_time})  /  {raw_frames_u32} total  ({total_time}){preview_label}"
     );
     lines.push(ratatui::text::Line::styled(
         info,

@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Scrolling viewport in the sample browser: long directory listings now scroll so the cursor is always visible; viewport height is derived from the terminal size at draw time (#72)
 - `..` parent directory entry appears at the top of every non-root directory in the sample browser; pressing Enter on it navigates up just like Backspace (#73)
 - Waveform editor screen (`View::WaveformEditor`): `w` in the instrument editor opens a full-width Braille waveform display for the active instrument's sample; if no sample is assigned a timed status bar error is shown and the screen does not open; all four handle bars (`sample_start`, `sample_end`, `loop_start`, `loop_end`) are rendered at their correct positions; `Esc` returns to the instrument editor and stops any active preview playback (#81)
-- Waveform editor Space preview: pressing Space toggles audio playback of the active instrument's sample from `sample_start`, respecting `sample_end`; pressing Space again stops playback; navigating away via Esc also stops playback; the info line shows `▶ previewing` while playback is active (#82)
+- Waveform editor handle editing: Tab/Shift+Tab cycles through the four handles (`SampleStart → SampleEnd → LoopStart → LoopEnd`); Left/Right arrow moves the active handle by 256 samples, Shift+arrow by 1024, Ctrl+Shift+arrow by 1; all moves silently clamp to valid ranges (`SampleStart ≤ SampleEnd`, `LoopStart/LoopEnd ∈ [SampleStart, SampleEnd]`); the status line now shows raw sample position and `mm:ss.ms` timestamp alongside total sample length (#83)
 
 ### Changed
 

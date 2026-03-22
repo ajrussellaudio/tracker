@@ -3,7 +3,10 @@ use crate::config::Config;
 use crate::history::History;
 use crate::note_utils::{note_name, pitch_speed};
 use crate::theme;
-use crate::wav_io::{load_all_instrument_samples, load_wav, load_wav_from_bytes, write_wav};
+use crate::wav_io::{
+    load_all_instrument_samples, load_wav, load_wav_from_bytes, load_wav_from_bytes_with_rate,
+    load_wav_with_rate, write_wav,
+};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
@@ -76,6 +79,7 @@ impl App {
             waveform_samples: Vec::new(),
             waveform_original_frames: 0,
             waveform_active_handle: crate::braille::ActiveHandle::SampleStart,
+            waveform_sample_rate: 44100,
         }
     }
 
@@ -187,13 +191,13 @@ impl App {
 
         let sample = instr.sample.as_ref().unwrap();
         let load_result = if let Some(bytes) = &sample.bytes {
-            load_wav_from_bytes(bytes)
+            load_wav_from_bytes_with_rate(bytes)
         } else {
-            load_wav(&sample.path)
+            load_wav_with_rate(&sample.path)
         };
 
         match load_result {
-            Ok((buf, _channels)) => {
+            Ok((buf, _channels, sample_rate)) => {
                 // Downsample to at most 4096 points so the renderer stays fast.
                 const MAX_WAVEFORM_SAMPLES: usize = 4096;
                 let original_frames = buf.len();
@@ -207,6 +211,7 @@ impl App {
                 };
                 self.waveform_samples = samples;
                 self.waveform_original_frames = original_frames;
+                self.waveform_sample_rate = sample_rate;
                 self.waveform_active_handle = crate::braille::ActiveHandle::SampleStart;
                 self.push_view(View::WaveformEditor);
             }
@@ -259,6 +264,101 @@ impl App {
             }
             Err(e) => self.set_timed_status(format!("Preview error: {e}")),
         }
+    }
+
+    /// Cycle the active waveform handle forward (Tab) or backward (Shift+Tab).
+    pub(crate) fn waveform_cycle_handle(&mut self, forward: bool) {
+        use crate::braille::ActiveHandle;
+        self.waveform_active_handle = if forward {
+            match self.waveform_active_handle {
+                ActiveHandle::SampleStart => ActiveHandle::SampleEnd,
+                ActiveHandle::SampleEnd   => ActiveHandle::LoopStart,
+                ActiveHandle::LoopStart   => ActiveHandle::LoopEnd,
+                ActiveHandle::LoopEnd     => ActiveHandle::SampleStart,
+            }
+        } else {
+            match self.waveform_active_handle {
+                ActiveHandle::SampleStart => ActiveHandle::LoopEnd,
+                ActiveHandle::SampleEnd   => ActiveHandle::SampleStart,
+                ActiveHandle::LoopStart   => ActiveHandle::SampleEnd,
+                ActiveHandle::LoopEnd     => ActiveHandle::LoopStart,
+            }
+        };
+    }
+
+    /// Move the active waveform handle by `delta` frames, then re-enforce clamping rules.
+    ///
+    /// Clamping rules (all values in raw sample frames):
+    /// - `SampleStart` ∈ `[0, SampleEnd]`
+    /// - `SampleEnd`   ∈ `[SampleStart, total_frames]`
+    /// - `LoopStart`   ∈ `[SampleStart, LoopEnd]`
+    /// - `LoopEnd`     ∈ `[LoopStart, SampleEnd]`
+    pub(crate) fn waveform_move_handle(&mut self, delta: i64) {
+        use crate::braille::ActiveHandle;
+
+        let idx = self.active_instrument;
+        let total = self.waveform_original_frames as u32;
+
+        let instr = match self.song.instruments.get_mut(idx) {
+            Some(i) => i,
+            None => return,
+        };
+
+        let ss = instr.sample_start.unwrap_or(0);
+        let se = instr.sample_end.unwrap_or(total);
+        let ls = instr.loop_start.unwrap_or(0);
+        let le = instr.loop_end.unwrap_or(total);
+
+        let apply = |val: u32, lo: u32, hi: u32| -> u32 {
+            let new_val = (val as i64).saturating_add(delta);
+            new_val.clamp(lo as i64, hi as i64) as u32
+        };
+
+        match self.waveform_active_handle {
+            ActiveHandle::SampleStart => {
+                let new_ss = apply(ss, 0, se);
+                instr.sample_start = Some(new_ss);
+                // LoopStart must stay within [new_ss, LoopEnd]
+                if ls < new_ss {
+                    instr.loop_start = Some(new_ss);
+                }
+                // LoopEnd must stay within [LoopStart, SampleEnd]
+                let ls2 = instr.loop_start.unwrap_or(new_ss);
+                if le < ls2 {
+                    instr.loop_end = Some(ls2);
+                }
+            }
+            ActiveHandle::SampleEnd => {
+                let new_se = apply(se, ss, total);
+                instr.sample_end = Some(new_se);
+                // LoopEnd must stay within [LoopStart, new_se]
+                if le > new_se {
+                    instr.loop_end = Some(new_se);
+                }
+                // LoopStart must stay within [SampleStart, LoopEnd]
+                let le2 = instr.loop_end.unwrap_or(new_se);
+                if ls > le2 {
+                    instr.loop_start = Some(le2);
+                }
+            }
+            ActiveHandle::LoopStart => {
+                // LoopEnd must stay within [LoopStart, SampleEnd]; ensure se is set
+                let current_se = instr.sample_end.unwrap_or(total);
+                let current_le = instr.loop_end.unwrap_or(current_se);
+                let new_ls = apply(ls, ss, current_le);
+                instr.loop_start = Some(new_ls);
+            }
+            ActiveHandle::LoopEnd => {
+                // LoopStart must stay within [SampleStart, LoopEnd]; ensure ss is set
+                let current_ss = instr.sample_start.unwrap_or(0);
+                let current_ls = instr.loop_start.unwrap_or(current_ss);
+                let current_se = instr.sample_end.unwrap_or(total);
+                let new_le = apply(le, current_ls, current_se);
+                instr.loop_end = Some(new_le);
+            }
+        }
+
+        self.is_dirty = true;
     }
 
     /// Reload sample from disk for the active instrument and send a LoadVoice command.
@@ -631,5 +731,194 @@ mod sample_bounds_tests {
         let (out, _, _) =
             apply_sample_bounds(Arc::clone(&buf), 2, Some(10), Some(40), 0, 0);
         assert_eq!(out.len(), 60);
+    }
+}
+
+#[cfg(test)]
+mod waveform_cycle_handle_tests {
+    use super::*;
+    use crate::braille::ActiveHandle;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU8},
+        Arc,
+    };
+
+    fn make_app() -> App {
+        App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    #[test]
+    fn forward_cycles_through_all_handles_and_wraps() {
+        let mut app = make_app();
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleEnd);
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopStart);
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopEnd);
+
+        // Wraparound back to SampleStart
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleStart);
+    }
+
+    #[test]
+    fn backward_cycles_through_all_handles_and_wraps() {
+        let mut app = make_app();
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Wraparound to LoopEnd
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopEnd);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopStart);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleEnd);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleStart);
+    }
+}
+
+#[cfg(test)]
+mod waveform_handle_tests {
+    use super::*;
+    use crate::braille::ActiveHandle;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU8},
+        Arc,
+    };
+
+    fn make_app_with_instrument(total_frames: u32) -> App {
+        let mut app = App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        app.ensure_instrument(0);
+        app.active_instrument = 0;
+        app.waveform_original_frames = total_frames as usize;
+        app
+    }
+
+    #[test]
+    fn sample_start_pushed_past_loop_start_cascades_loop_start() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(30);
+        instr.loop_end = Some(70);
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Move SampleStart forward past LoopStart (30)
+        app.waveform_move_handle(50);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(instr.sample_start, Some(50), "SampleStart should be at 50");
+        assert_eq!(
+            instr.loop_start,
+            Some(50),
+            "LoopStart should be clamped to new SampleStart"
+        );
+    }
+
+    #[test]
+    fn sample_end_pulled_below_loop_end_cascades_loop_end() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(20);
+        instr.loop_end = Some(80);
+        app.waveform_active_handle = ActiveHandle::SampleEnd;
+
+        // Move SampleEnd backward below LoopEnd (80)
+        app.waveform_move_handle(-40);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(instr.sample_end, Some(60), "SampleEnd should be at 60");
+        assert_eq!(
+            instr.loop_end,
+            Some(60),
+            "LoopEnd should be clamped to new SampleEnd"
+        );
+    }
+
+    #[test]
+    fn loop_start_none_with_sample_start_nonzero_snaps_to_sample_start() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(30);
+        instr.sample_end = Some(100);
+        instr.loop_start = None; // defaults to 0 < sample_start
+        instr.loop_end = Some(80);
+        app.waveform_active_handle = ActiveHandle::LoopStart;
+
+        // A negative delta that would push the effective ls=0 below SampleStart=30
+        app.waveform_move_handle(-10);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.loop_start,
+            Some(30),
+            "LoopStart should snap to SampleStart when loop_start is None and sample_start > 0"
+        );
+    }
+
+    #[test]
+    fn loop_end_none_clamped_to_sample_end() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(80);
+        instr.loop_start = Some(10);
+        instr.loop_end = None; // defaults to total=100, which is > sample_end=80
+        app.waveform_active_handle = ActiveHandle::LoopEnd;
+
+        // A positive delta that tries to push le=100 further up
+        app.waveform_move_handle(10);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.loop_end,
+            Some(80),
+            "LoopEnd should be clamped to SampleEnd when loop_end is None"
+        );
+    }
+
+    #[test]
+    fn delta_that_would_take_handle_negative_saturates_at_zero() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(5);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(0);
+        instr.loop_end = Some(100);
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Large negative delta — should saturate at 0, not underflow
+        app.waveform_move_handle(-1000);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.sample_start,
+            Some(0),
+            "SampleStart should saturate at 0, not underflow"
+        );
     }
 }
