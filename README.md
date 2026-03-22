@@ -6,12 +6,9 @@ A CLI/TUI sample-based music tracker written in Rust. Arrange samples into phras
 
 ### Pre-built binary (macOS Apple Silicon)
 
-Download the latest release, extract the archive, and move the binary onto your `PATH`:
-
 ```bash
-curl -L https://github.com/ajrussellaudio/tracker/releases/latest/download/tracker-aarch64-apple-darwin.tar.xz \
-  | tar -xJ
-mv tracker /usr/local/bin/
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/ajrussellaudio/tracker/releases/latest/download/tracker-installer.sh | sh
 ```
 
 Then launch with:
