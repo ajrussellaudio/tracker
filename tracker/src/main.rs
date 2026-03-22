@@ -2016,7 +2016,7 @@ fn run_tui(
                 match app.view {
                 View::Startup => "j/k: navigate  Enter: select  q: quit".to_string(),
                 View::SongView => format!(
-                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  q: quit"
+                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  ←/→: BPM  q: quit"
                 ),
                 View::ChainView => {
                     if app.chain_insert_mode {
@@ -2026,7 +2026,7 @@ fn run_tui(
                     }
                 }
                 View::PhraseEditor => match app.mode {
-                    InputMode::Normal => format!("{mode_label}  |  {transport}  |  {}", app.status),
+                    InputMode::Normal => format!("{mode_label}  |  {transport}  |  SPC: play  i: insert  Tab: instrument  ←/→: BPM  :: command  q: quit"),
                     InputMode::Insert => {
                         let col_hint = match col_to_fx(app.cursor_col) {
                             Some((s, true)) => {
