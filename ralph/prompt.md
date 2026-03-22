@@ -66,7 +66,9 @@ Launch a **general-purpose sub-agent** with this prompt:
 > For each issue found, return: file path, approximate line number, a clear description of the problem, and a concrete suggested fix.
 > If you find no genuine issues, return exactly the word: LGTM"
 
-**If LGTM:** post an APPROVED comment (see below) and proceed to **[Merge Mode](#merge-mode)**.
+**If LGTM:** post an APPROVED comment (see below), then emit the following token as your **final output** and end your response immediately:
+
+<promise>STOP</promise>
 
 **If issues found:** post a REQUEST_CHANGES comment (see below), then emit the following token as your **final output** and end your response immediately:
 
@@ -88,7 +90,9 @@ Launch a **general-purpose sub-agent** with this prompt:
 > For each original issue, state: RESOLVED or UNRESOLVED (with a brief reason).
 > If all are RESOLVED, return exactly the word: LGTM"
 
-**If LGTM (all resolved):** post an APPROVED comment and proceed to **[Merge Mode](#merge-mode)**.
+**If LGTM (all resolved):** post an APPROVED comment (see below), then emit the following token as your **final output** and end your response immediately:
+
+<promise>STOP</promise>
 
 **If any issues are UNRESOLVED:** this is the final round — post a REQUEST_CHANGES comment listing only the still-unresolved items. Then emit the following token as your **final output** and end your response immediately:
 
@@ -160,8 +164,9 @@ PR `#<N>` has already had two rounds of review and fixes. Approve it uncondition
 
    — Ralph 🤖
    ```
-2. Log in a PR comment: `"PR #<N> — approved after max review rounds."` (no need to write to any file)
-3. Proceed immediately to **[Merge Mode](#merge-mode)**.
+2. Emit the following token as your **final output** and end your response immediately:
+
+   <promise>STOP</promise>
 
 ---
 
@@ -173,9 +178,9 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    ```bash
    gh pr checks <N> < /dev/null
    ```
-   Look at the output. If any check is **failed**, post a `REQUEST_CHANGES` comment (using the standard `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` format) listing the failing check names, then **stop**. The next iteration will enter Fix Mode where Ralph can address the failures.
+   Look at the output. If any check is **failed**, post a `REQUEST_CHANGES` comment (using the standard `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` format) listing the failing check names, then emit `<promise>STOP</promise>` as your final output.
 
-   If any check is still **in progress**, **stop without posting a comment**. The next iteration will return to Merge Mode and re-check.
+   If any check is still **in progress**, emit `<promise>STOP</promise>` as your final output without posting a comment.
 
    Only proceed to step 2 if all checks have passed.
 
@@ -183,11 +188,11 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    ```bash
    gh pr merge <N> --merge < /dev/null
    ```
-2. Pull latest main:
+3. Pull latest main:
    ```bash
    git checkout main && git pull --ff-only origin main
    ```
-3. Find all open `ralph/issue-*` PRs with a PR number greater than `<N>`. For each, in ascending order:
+4. Find all open `ralph/issue-*` PRs with a PR number greater than `<N>`. For each, in ascending order:
    - Note the tip SHA of the just-merged branch before it was deleted (use `git log` or the PR's merge info to find the last commit of the merged branch).
    - Fetch and rebase the downstream branch onto the new main:
      ```bash
@@ -197,7 +202,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    - If the rebase succeeds and the test command (see `ralph/project.md`) passes: `git push --force-with-lease origin ralph/issue-<M>`
    - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run the test command (see `ralph/project.md`) to verify. If tests pass, continue the rebase and push.
    - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
-4. Unblock any issues that were waiting on the issue you just closed (`#<X>`, where `<X>` is the issue number closed by PR `#<N>`):
+5. Unblock any issues that were waiting on the issue you just closed (`#<X>`, where `<X>` is the issue number closed by PR `#<N>`):
    - Fetch all open issues that carry the `blocked` label:
      ```bash
      gh issue list --repo <repo> --label blocked --json number,body --limit 100
@@ -211,7 +216,7 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
      ```bash
      gh issue edit <issue-number> --repo <repo> --remove-label "blocked"
      ```
-5. Emit the following token as your **final output** and end your response immediately:
+6. Emit the following token as your **final output** and end your response immediately:
 
    <promise>STOP</promise>
 
