@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Extract `note_utils`, `wav_io`, and `cli` modules from `vitakt/src/main.rs` (Phase 1 of #84 refactor): pure note/column helpers, WAV encode/decode helpers, and CLI argument parsing now live in their own modules (#84)
+- Extract `app`, `render`, and `audio_stream` modules from `vitakt/src/main.rs` (Phase 2 refactor): app state types and enums live in `app.rs`; all 7 TUI render functions live in `render.rs`; `start_audio_stream` lives in `audio_stream.rs` (#92)
 
 - Rename Cargo workspace and crate names from `tracker`/`tracker-core` to `vitakt`/`vitakt-core`; rename source directories accordingly (#62)
 - Rename user-visible strings, config path (`~/.config/vitakt/theme.toml`), usage messages, and internal test fixtures from `tracker` to `vitakt`; add one-time migration that copies `~/.config/tracker/theme.toml` to the new location on first run (#63)
