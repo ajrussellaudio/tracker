@@ -188,4 +188,12 @@ pub struct App {
     pub browser_bookmark_cursor: usize,
     /// Set by `browser_launch_external`; tui.rs calls `terminal.clear()` before the next draw.
     pub needs_terminal_clear: bool,
+    /// Sample browser: active search query (empty when no search is active).
+    pub browser_search_query: String,
+    /// Sample browser: indices into `browser_entries` that match the current search query.
+    pub browser_search_matches: Vec<usize>,
+    /// Sample browser: which match index within `browser_search_matches` is currently active.
+    pub browser_search_idx: usize,
+    /// Sample browser: whether the user is currently typing a search query.
+    pub browser_searching: bool,
 }

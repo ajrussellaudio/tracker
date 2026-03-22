@@ -461,12 +461,37 @@ pub fn render_startup_screen(app: &App) -> Paragraph<'static> {
 pub fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'static> {
     let dir_display = app.browser_dir.to_string_lossy().to_string();
 
+    let search_active = app.browser_searching || !app.browser_search_query.is_empty();
+
+    let search_line = if search_active {
+        let cursor_char = if app.browser_searching { "▌" } else { "" };
+        let match_info = if !app.browser_search_query.is_empty() {
+            if app.browser_search_matches.is_empty() {
+                " (no matches)".to_string()
+            } else {
+                format!(
+                    " ({}/{})",
+                    app.browser_search_idx + 1,
+                    app.browser_search_matches.len()
+                )
+            }
+        } else {
+            String::new()
+        };
+        ratatui::text::Line::styled(
+            format!("  /{}{}{}", app.browser_search_query, cursor_char, match_info),
+            Style::default().fg(app.theme.cursor_bg),
+        )
+    } else {
+        ratatui::text::Line::from("")
+    };
+
     let mut lines = vec![
         ratatui::text::Line::styled(
             format!("  {dir_display}"),
             Style::default().fg(app.theme.inactive_track),
         ),
-        ratatui::text::Line::from(""),
+        search_line,
     ];
 
     if app.browser_entries.is_empty() {
@@ -475,7 +500,7 @@ pub fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'st
             Style::default().fg(app.theme.inactive_track),
         ));
     } else {
-        // 2 borders + 2 header lines (dir path + blank) = 4 rows consumed
+        // 2 borders + 2 header lines (dir path + search/blank) = 4 rows consumed
         let available = viewport_height.saturating_sub(4);
         let scroll = app.browser_scroll;
         let end = if available == 0 {
@@ -487,8 +512,13 @@ pub fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'st
             let abs_idx = scroll + i;
             let is_dir = matches!(entry, BrowserEntry::Dir(_) | BrowserEntry::ParentDir);
             let display = entry.display_name();
+            let is_match = search_active
+                && !app.browser_search_matches.is_empty()
+                && app.browser_search_matches.contains(&abs_idx);
             let (prefix, style) = if abs_idx == app.browser_cursor {
                 ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
+            } else if is_match {
+                ("  ", Style::default().fg(app.theme.cursor_bg))
             } else if is_dir {
                 ("  ", Style::default().fg(app.theme.screen_title))
             } else {
@@ -501,8 +531,8 @@ pub fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'st
     Paragraph::new(lines).block(
         Block::default()
             .title(match app.browser_mode {
-                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel]",
-                BrowserMode::Project => "Open Project  [Enter: select  -/Backspace: up  Esc: cancel]",
+                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  /: search  b: bookmarks  B: bookmark here  Esc: cancel]",
+                BrowserMode::Project => "Open Project  [Enter: select  -/Backspace: up  /: search  Esc: cancel]",
             })
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.screen_title)),

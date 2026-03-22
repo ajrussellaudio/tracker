@@ -808,10 +808,53 @@ fn handle_sample_browser(app: &mut App, key: KeyEvent, terminal_height: u16) -> 
             }
             _ => {}
         }
+    } else if app.browser_searching {
+        let available = (terminal_height as usize).saturating_sub(5);
+        match key.code {
+            KeyCode::Esc => {
+                app.browser_search_clear();
+            }
+            KeyCode::Enter => {
+                // Confirm search: stay on current match, exit typing mode.
+                app.browser_searching = false;
+            }
+            KeyCode::Backspace => {
+                app.browser_search_query.pop();
+                if app.browser_search_query.is_empty() {
+                    app.browser_search_matches.clear();
+                    app.browser_search_idx = 0;
+                } else {
+                    app.browser_search_update(available);
+                }
+            }
+            KeyCode::Char(c) => {
+                app.browser_search_query.push(c);
+                app.browser_search_update(available);
+            }
+            _ => {}
+        }
     } else {
         match key.code {
             KeyCode::Esc => {
-                app.pop_view();
+                if !app.browser_search_query.is_empty() {
+                    app.browser_search_clear();
+                } else {
+                    app.pop_view();
+                }
+            }
+            KeyCode::Char('/') => {
+                app.browser_searching = true;
+                app.browser_search_query.clear();
+                app.browser_search_matches.clear();
+                app.browser_search_idx = 0;
+            }
+            KeyCode::Char('n') => {
+                let available = (terminal_height as usize).saturating_sub(5);
+                app.browser_search_next(available);
+            }
+            KeyCode::Char('N') => {
+                let available = (terminal_height as usize).saturating_sub(5);
+                app.browser_search_prev(available);
             }
             KeyCode::Char(' ') => app.browser_preview_toggle(),
             KeyCode::Char('j') | KeyCode::Down => {
