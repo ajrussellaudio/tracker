@@ -67,7 +67,7 @@ fi
 cleanup() {
   if git -C "$GIT_ROOT" worktree list | grep -q "$WORKTREE_DIR"; then
     echo ""
-    echo "  Removing worktree at $WORKTREE_DIR …"
+    echo "  Removing worktree at ${WORKTREE_DIR} …"
     git -C "$GIT_ROOT" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
   fi
 }
@@ -84,7 +84,7 @@ if [[ -d "$WORKTREE_DIR" ]]; then
 fi
 
 echo ""
-echo "  Creating worktree at $WORKTREE_DIR …"
+echo "  Creating worktree at ${WORKTREE_DIR} …"
 git -C "$GIT_ROOT" worktree add --detach "$WORKTREE_DIR" origin/main
 
 # ── Routing ────────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ determine_mode() {
   echo "  🔄 Syncing workspace…"
   (cd "$WORKTREE_DIR" && git fetch origin && git reset --hard origin/main) > /dev/null 2>&1
 
-  echo "  🔍 Checking for open ralph PRs in $REPO…"
+  echo "  🔍 Checking for open ralph PRs in ${REPO}…"
   OPEN_RALPH_PRS=$(gh pr list --repo "$REPO" --state open \
     --json number,headRefName \
     --jq '[.[] | select(.headRefName | startswith("ralph/issue-"))] | sort_by(.number)' \
