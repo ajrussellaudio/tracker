@@ -1,5 +1,5 @@
-# tracker theme configuration
-# Place this file at ~/.config/tracker/theme.toml to apply a custom color theme.
+# vitakt theme configuration
+# Place this file at ~/.config/vitakt/theme.toml to apply a custom color theme.
 #
 # All values are hex color strings in #RRGGBB format.
 # On terminals without true-color support (COLORTERM != truecolor/24bit),
