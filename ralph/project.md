@@ -5,9 +5,9 @@ This file contains the project-specific settings that parameterise the generic
 
 ## Project
 
-**Name:** tracker — a CLI/TUI sample-based music tracker in Rust
+**Name:** vitakt — a CLI/TUI sample-based music tracker in Rust
 
-**GitHub repo:** `ajrussellaudio/tracker`
+**GitHub repo:** `ajrussellaudio/vitakt`
 
 ## Build and test commands
 
