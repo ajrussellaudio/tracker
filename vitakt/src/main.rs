@@ -210,6 +210,8 @@ struct App {
     browser_dir: PathBuf,
     /// What the browser is selecting (sample or project file).
     browser_mode: BrowserMode,
+    /// Sample browser: scroll offset — number of entries hidden above the visible window.
+    browser_scroll: usize,
     /// Startup screen: cursor (0 = New Project, 1 = Open File).
     startup_cursor: usize,
     /// Index of the phrase currently being edited.
@@ -287,6 +289,7 @@ impl App {
             browser_cursor: 0,
             browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             browser_mode: BrowserMode::Sample,
+            browser_scroll: 0,
             startup_cursor: 0,
             active_phrase_idx: 0,
             view_stack: Vec::new(),
@@ -492,6 +495,7 @@ impl App {
         self.browser_mode = BrowserMode::Sample;
         self.browser_entries = list_browser_entries(&self.browser_dir);
         self.browser_cursor = 0;
+        self.browser_scroll = 0;
         self.push_view(View::SampleBrowser);
     }
 
@@ -502,6 +506,7 @@ impl App {
         self.browser_mode = BrowserMode::Project;
         self.browser_entries = list_browser_entries_ext(&self.browser_dir, "trk");
         self.browser_cursor = 0;
+        self.browser_scroll = 0;
         self.push_view(View::SampleBrowser);
     }
 
@@ -518,6 +523,7 @@ impl App {
                     };
                     self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
                     self.browser_cursor = 0;
+                    self.browser_scroll = 0;
                 }
                 BrowserEntry::Wav(name) => match self.browser_mode {
                     BrowserMode::Sample => {
@@ -581,6 +587,20 @@ impl App {
             };
             self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
             self.browser_cursor = 0;
+            self.browser_scroll = 0;
+        }
+    }
+
+    /// Adjust `browser_scroll` so that `browser_cursor` stays within the visible window.
+    /// `available` is the number of entry rows visible (after accounting for borders and header).
+    fn browser_clamp_scroll(&mut self, available: usize) {
+        if available == 0 {
+            return;
+        }
+        if self.browser_cursor < self.browser_scroll {
+            self.browser_scroll = self.browser_cursor;
+        } else if self.browser_cursor >= self.browser_scroll + available {
+            self.browser_scroll = self.browser_cursor - available + 1;
         }
     }
 
@@ -1688,7 +1708,7 @@ fn render_startup_screen(app: &App) -> Paragraph<'static> {
 
 // ── Sample browser render ─────────────────────────────────────────────────────
 
-fn render_sample_browser(app: &App) -> Paragraph<'static> {
+fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'static> {
     let dir_display = app.browser_dir.to_string_lossy().to_string();
 
     let mut lines = vec![
@@ -1705,10 +1725,19 @@ fn render_sample_browser(app: &App) -> Paragraph<'static> {
             Style::default().fg(app.theme.inactive_track),
         ));
     } else {
-        for (i, entry) in app.browser_entries.iter().enumerate() {
+        // 2 borders + 2 header lines (dir path + blank) = 4 rows consumed
+        let available = viewport_height.saturating_sub(4);
+        let scroll = app.browser_scroll;
+        let end = if available == 0 {
+            app.browser_entries.len()
+        } else {
+            (scroll + available).min(app.browser_entries.len())
+        };
+        for (i, entry) in app.browser_entries[scroll..end].iter().enumerate() {
+            let abs_idx = scroll + i;
             let is_dir = matches!(entry, BrowserEntry::Dir(_));
             let display = entry.display_name();
-            let (prefix, style) = if i == app.browser_cursor {
+            let (prefix, style) = if abs_idx == app.browser_cursor {
                 ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
             } else if is_dir {
                 ("  ", Style::default().fg(app.theme.screen_title))
@@ -1947,7 +1976,7 @@ fn run_tui(
                     frame.render_widget(para, outer[0]);
                 }
                 View::SampleBrowser => {
-                    let para = render_sample_browser(&app);
+                    let para = render_sample_browser(&app, outer[0].height as usize);
                     frame.render_widget(para, outer[0]);
                 }
                 View::Mixer => {
@@ -2878,6 +2907,11 @@ fn run_tui(
                             if !app.browser_entries.is_empty() {
                                 app.browser_cursor =
                                     (app.browser_cursor + 1) % app.browser_entries.len();
+                                let available = terminal
+                                    .size()
+                                    .map(|r| (r.height as usize).saturating_sub(5))
+                                    .unwrap_or(0);
+                                app.browser_clamp_scroll(available);
                             }
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
@@ -2885,6 +2919,11 @@ fn run_tui(
                                 app.browser_cursor =
                                     (app.browser_cursor + app.browser_entries.len() - 1)
                                         % app.browser_entries.len();
+                                let available = terminal
+                                    .size()
+                                    .map(|r| (r.height as usize).saturating_sub(5))
+                                    .unwrap_or(0);
+                                app.browser_clamp_scroll(available);
                             }
                         }
                         KeyCode::Enter => app.browser_enter(),
@@ -4195,6 +4234,73 @@ mod tests {
             !app.preview_playing.load(Ordering::Relaxed),
             "pop_view should clear the preview_playing atomic"
         );
+    }
+
+    #[test]
+    fn browser_clamp_scroll_scrolls_down_when_cursor_below_window() {
+        let mut app = make_app();
+        // 10 entries, viewport shows 5 at a time
+        app.browser_entries = (0..10).map(|i| BrowserEntry::Wav(format!("{i}.wav"))).collect();
+        app.browser_scroll = 0;
+        app.browser_cursor = 7; // past end of window [0..5)
+        app.browser_clamp_scroll(5);
+        assert_eq!(app.browser_scroll, 3, "scroll should move cursor to last visible row");
+    }
+
+    #[test]
+    fn browser_clamp_scroll_scrolls_up_when_cursor_above_window() {
+        let mut app = make_app();
+        app.browser_entries = (0..10).map(|i| BrowserEntry::Wav(format!("{i}.wav"))).collect();
+        app.browser_scroll = 5;
+        app.browser_cursor = 2; // above scroll offset
+        app.browser_clamp_scroll(5);
+        assert_eq!(app.browser_scroll, 2, "scroll should move to show cursor at top");
+    }
+
+    #[test]
+    fn browser_clamp_scroll_noop_when_cursor_in_window() {
+        let mut app = make_app();
+        app.browser_entries = (0..10).map(|i| BrowserEntry::Wav(format!("{i}.wav"))).collect();
+        app.browser_scroll = 2;
+        app.browser_cursor = 4; // inside window [2..7)
+        app.browser_clamp_scroll(5);
+        assert_eq!(app.browser_scroll, 2, "scroll should not change when cursor is visible");
+    }
+
+    #[test]
+    fn browser_clamp_scroll_noop_when_available_is_zero() {
+        let mut app = make_app();
+        app.browser_entries = (0..10).map(|i| BrowserEntry::Wav(format!("{i}.wav"))).collect();
+        app.browser_scroll = 3;
+        app.browser_cursor = 0;
+        app.browser_clamp_scroll(0); // zero available — should be a no-op
+        assert_eq!(app.browser_scroll, 3, "scroll should not change when available is 0");
+    }
+
+    #[test]
+    fn browser_enter_resets_scroll_on_dir_navigation() {
+        let parent = std::env::temp_dir().join("vitakt_scroll_reset_test");
+        let subdir = parent.join("subdir");
+        std::fs::create_dir_all(&subdir).ok();
+        std::fs::write(subdir.join("kick.wav"), b"RIFF").ok();
+
+        let mut app = make_app();
+        app.browser_dir = parent.clone();
+        app.browser_entries = list_browser_entries(&parent);
+        app.browser_scroll = 5; // simulate scrolled state
+        let dir_idx = app
+            .browser_entries
+            .iter()
+            .position(|e| matches!(e, BrowserEntry::Dir(_)))
+            .expect("should have a Dir entry");
+        app.browser_cursor = dir_idx;
+        app.browser_enter();
+
+        assert_eq!(app.browser_scroll, 0, "browser_scroll should reset to 0 after navigating into a dir");
+
+        std::fs::remove_file(subdir.join("kick.wav")).ok();
+        std::fs::remove_dir(&subdir).ok();
+        std::fs::remove_dir(&parent).ok();
     }
 }
 
