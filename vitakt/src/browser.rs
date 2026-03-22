@@ -297,23 +297,39 @@ impl App {
     }
 
     /// Advance to the next search match, wrapping at the end.
+    ///
+    /// Re-syncs the internal index to the current cursor position before
+    /// advancing, so manual `j`/`k` navigation after confirming a search does
+    /// not cause `n` to jump back to a stale match.
     pub(crate) fn browser_search_next(&mut self, available: usize) {
         if self.browser_search_matches.is_empty() {
             return;
         }
-        self.browser_search_idx =
-            (self.browser_search_idx + 1) % self.browser_search_matches.len();
+        let current = self
+            .browser_search_matches
+            .iter()
+            .rposition(|&m| m <= self.browser_cursor)
+            .unwrap_or(self.browser_search_matches.len() - 1);
+        self.browser_search_idx = (current + 1) % self.browser_search_matches.len();
         self.browser_cursor = self.browser_search_matches[self.browser_search_idx];
         self.browser_clamp_scroll(available);
     }
 
     /// Retreat to the previous search match, wrapping at the start.
+    ///
+    /// Re-syncs the internal index to the current cursor position before
+    /// retreating, symmetric with `browser_search_next`.
     pub(crate) fn browser_search_prev(&mut self, available: usize) {
         if self.browser_search_matches.is_empty() {
             return;
         }
         let len = self.browser_search_matches.len();
-        self.browser_search_idx = (self.browser_search_idx + len - 1) % len;
+        let current = self
+            .browser_search_matches
+            .iter()
+            .position(|&m| m >= self.browser_cursor)
+            .unwrap_or(0);
+        self.browser_search_idx = (current + len - 1) % len;
         self.browser_cursor = self.browser_search_matches[self.browser_search_idx];
         self.browser_clamp_scroll(available);
     }
