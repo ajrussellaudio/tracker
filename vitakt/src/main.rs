@@ -1665,7 +1665,7 @@ fn render_startup_screen(app: &App) -> Paragraph<'static> {
     let mut lines = vec![
         ratatui::text::Line::from(""),
         ratatui::text::Line::styled(
-            "  Welcome to tracker",
+            "  Welcome to vitakt",
             Style::default().fg(app.theme.screen_title).add_modifier(Modifier::BOLD),
         ),
         ratatui::text::Line::from(""),
@@ -1680,7 +1680,7 @@ fn render_startup_screen(app: &App) -> Paragraph<'static> {
     }
     Paragraph::new(lines).block(
         Block::default()
-            .title("tracker  [j/k: navigate  Enter: select  q: quit]")
+            .title("vitakt  [j/k: navigate  Enter: select  q: quit]")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.screen_title)),
     )
@@ -3081,11 +3081,11 @@ fn parse_args(args: &[String]) -> Result<CliAction> {
             if arg == "--sample" {
                 anyhow::bail!(
                     "`--sample` has been removed.\n\
-                     Launch with `tracker path/to/project.trk` to open a project directly,\n\
-                     or `tracker` with no arguments to show the startup screen."
+                     Launch with `vitakt path/to/project.trk` to open a project directly,\n\
+                     or `vitakt` with no arguments to show the startup screen."
                 );
             }
-            anyhow::bail!("Unknown flag: {arg}\nUsage: tracker [path.trk]");
+            anyhow::bail!("Unknown flag: {arg}\nUsage: vitakt [path.trk]");
         }
     }
     Ok(CliAction::OpenFile(std::path::PathBuf::from(&args[0])))
@@ -3322,7 +3322,7 @@ mod tests {
         app.enter_note(64);
         app.enter_note(67);
 
-        let path = std::env::temp_dir().join("tracker_phrase_roundtrip.trk");
+        let path = std::env::temp_dir().join("vitakt_phrase_roundtrip.trk");
         let path_str = path.to_str().unwrap().to_string();
 
         app.mode = InputMode::Command;
@@ -3446,7 +3446,7 @@ mod tests {
         app.song.instruments[0].volume = 0.75;
         app.song.instruments[0].pan = -0.5;
 
-        let path = std::env::temp_dir().join("tracker_instrument_roundtrip.trk");
+        let path = std::env::temp_dir().join("vitakt_instrument_roundtrip.trk");
         let path_str = path.to_str().unwrap().to_string();
 
         app.mode = InputMode::Command;
@@ -3480,7 +3480,7 @@ mod tests {
 
     #[test]
     fn list_browser_entries_tags_and_filters_correctly() {
-        let dir = std::env::temp_dir().join("tracker_browser_test");
+        let dir = std::env::temp_dir().join("vitakt_browser_test");
         std::fs::create_dir_all(&dir).ok();
 
         // Create wav files (case-insensitive extension), a non-wav file, and a subdir
@@ -3513,7 +3513,7 @@ mod tests {
 
     #[test]
     fn list_browser_entries_empty_dir() {
-        let dir = std::env::temp_dir().join("tracker_browser_empty_test");
+        let dir = std::env::temp_dir().join("vitakt_browser_empty_test");
         std::fs::create_dir_all(&dir).ok();
         // Remove any files that might exist from a previous run
         if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -3539,7 +3539,7 @@ mod tests {
 
     #[test]
     fn browser_enter_on_dir_updates_browser_dir_and_entries() {
-        let parent = std::env::temp_dir().join("tracker_browser_enter_test");
+        let parent = std::env::temp_dir().join("vitakt_browser_enter_test");
         let subdir = parent.join("subdir");
         std::fs::create_dir_all(&subdir).ok();
         std::fs::write(subdir.join("kick.wav"), b"RIFF").ok();
@@ -3575,7 +3575,7 @@ mod tests {
 
     #[test]
     fn browser_go_up_navigates_to_parent() {
-        let parent = std::env::temp_dir().join("tracker_go_up_test");
+        let parent = std::env::temp_dir().join("vitakt_go_up_test");
         let child = parent.join("child");
         std::fs::create_dir_all(&child).ok();
 
@@ -3645,7 +3645,7 @@ mod tests {
         app.song.arrangement[0][3] = Some(2);
         app.ensure_chain(2);
 
-        let path = std::env::temp_dir().join("tracker_arrangement_roundtrip.trk");
+        let path = std::env::temp_dir().join("vitakt_arrangement_roundtrip.trk");
         let path_str = path.to_str().unwrap().to_string();
 
         app.mode = InputMode::Command;
@@ -3719,7 +3719,7 @@ mod tests {
         app.song.mixer[3].solo = true;
         app.song.mixer[4].fx_send = 0.3;
 
-        let path = std::env::temp_dir().join("tracker_mixer_roundtrip.trk");
+        let path = std::env::temp_dir().join("vitakt_mixer_roundtrip.trk");
         let path_str = path.to_str().unwrap().to_string();
 
         app.mode = InputMode::Command;
@@ -4042,7 +4042,7 @@ mod tests {
 
     #[test]
     fn parse_args_no_args_shows_startup() {
-        let args: Vec<String> = vec!["tracker".to_string()];
+        let args: Vec<String> = vec!["vitakt".to_string()];
         assert_eq!(parse_args(&args).unwrap(), CliAction::ShowStartup);
     }
 
@@ -4054,7 +4054,7 @@ mod tests {
 
     #[test]
     fn parse_args_positional_path_gives_open_file() {
-        let args: Vec<String> = vec!["tracker".to_string(), "my-song.trk".to_string()];
+        let args: Vec<String> = vec!["vitakt".to_string(), "my-song.trk".to_string()];
         assert_eq!(
             parse_args(&args).unwrap(),
             CliAction::OpenFile(std::path::PathBuf::from("my-song.trk"))
@@ -4064,7 +4064,7 @@ mod tests {
     #[test]
     fn parse_args_removed_sample_flag_gives_error() {
         let args: Vec<String> =
-            vec!["tracker".to_string(), "--sample".to_string(), "kick.wav".to_string()];
+            vec!["vitakt".to_string(), "--sample".to_string(), "kick.wav".to_string()];
         assert!(parse_args(&args).is_err(), "--sample should return an error");
         let err = parse_args(&args).unwrap_err().to_string();
         assert!(err.contains("--sample"), "error should mention --sample");
@@ -4072,7 +4072,7 @@ mod tests {
 
     #[test]
     fn parse_args_unknown_flag_gives_error() {
-        let args: Vec<String> = vec!["tracker".to_string(), "--unknown".to_string()];
+        let args: Vec<String> = vec!["vitakt".to_string(), "--unknown".to_string()];
         assert!(parse_args(&args).is_err(), "unknown flag should return an error");
     }
 

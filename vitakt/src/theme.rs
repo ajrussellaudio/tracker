@@ -158,7 +158,7 @@ fn hex_to_color(s: &str, key: &str, truecolor: bool) -> Option<Color> {
         }
         None => {
             eprintln!(
-                "tracker: theme warning: invalid hex color {:?} for key '{}' — using terminal default",
+                "vitakt: theme warning: invalid hex color {:?} for key '{}' — using terminal default",
                 s, key
             );
             None
@@ -168,7 +168,7 @@ fn hex_to_color(s: &str, key: &str, truecolor: bool) -> Option<Color> {
 
 // ── Public loader ─────────────────────────────────────────────────────────────
 
-/// Load the user theme from `~/.config/tracker/theme.toml`.
+/// Load the user theme from `~/.config/vitakt/theme.toml`.
 ///
 /// - If the file does not exist, returns the default theme (all `Color::Reset`).
 /// - If the file exists but is malformed, prints a warning and returns default.
@@ -180,6 +180,21 @@ pub fn load() -> Theme {
         None => return Theme::default(),
     };
 
+    // One-time migration: copy ~/.config/tracker/theme.toml to ~/.config/vitakt/ if needed.
+    if !path.exists() {
+        if let Some(old_path) = legacy_config_path() {
+            if old_path.exists() {
+                if let Some(parent) = path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        eprintln!("vitakt: theme warning: could not create config dir {:?}: {} — using terminal defaults", parent, e);
+                    } else if let Err(e) = std::fs::copy(&old_path, &path) {
+                        eprintln!("vitakt: theme warning: could not migrate theme from {:?}: {} — using terminal defaults", old_path, e);
+                    }
+                }
+            }
+        }
+    }
+
     if !path.exists() {
         return Theme::default();
     }
@@ -187,7 +202,7 @@ pub fn load() -> Theme {
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("tracker: theme warning: could not read {:?}: {} — using terminal defaults", path, e);
+            eprintln!("vitakt: theme warning: could not read {:?}: {} — using terminal defaults", path, e);
             return Theme::default();
         }
     };
@@ -195,7 +210,7 @@ pub fn load() -> Theme {
     let config: ThemeConfig = match toml::from_str(&raw) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("tracker: theme warning: malformed TOML in {:?}: {} — using terminal defaults", path, e);
+            eprintln!("vitakt: theme warning: malformed TOML in {:?}: {} — using terminal defaults", path, e);
             return Theme::default();
         }
     };
@@ -236,9 +251,14 @@ pub fn load() -> Theme {
     }
 }
 
-fn home_config_path() -> Option<std::path::PathBuf> {
+fn legacy_config_path() -> Option<std::path::PathBuf> {
     let home = env::var("HOME").ok()?;
     Some(std::path::Path::new(&home).join(".config").join("tracker").join("theme.toml"))
+}
+
+fn home_config_path() -> Option<std::path::PathBuf> {
+    let home = env::var("HOME").ok()?;
+    Some(std::path::Path::new(&home).join(".config").join("vitakt").join("theme.toml"))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -424,5 +444,39 @@ mod tests {
             keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
             playback_head_bg: resolve!(config.playback_head_bg, "playback_head_bg", Color::Rgb(0, 95, 135)),
         }
+    }
+
+    // Mutex to serialise tests that mutate the HOME env var.
+    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn migration_copies_legacy_config_to_new_path() {
+        let _guard = HOME_MUTEX.lock().unwrap();
+
+        let tmp = std::env::temp_dir().join("vitakt_theme_migration_test");
+        let legacy_dir = tmp.join(".config").join("tracker");
+        let legacy_path = legacy_dir.join("theme.toml");
+        let new_path = tmp.join(".config").join("vitakt").join("theme.toml");
+
+        // Clean up from any previous run.
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(&legacy_path, r##"cursor_bg = "#FF8C00""##).unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.to_str().unwrap());
+
+        let theme = load();
+
+        // Restore HOME before any assertions that might panic.
+        match original_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(new_path.exists(), "vitakt config should have been created by migration");
+        assert_eq!(theme.cursor_bg, Color::Rgb(0xFF, 0x8C, 0x00));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
