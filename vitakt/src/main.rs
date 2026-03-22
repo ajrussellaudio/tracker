@@ -26,6 +26,27 @@ use theme::Theme;
 mod tui;
 mod wav_io;
 
+// Imports used only in tests — gated so they don't generate unused-import warnings
+// in release/binary builds.
+#[cfg(test)]
+use app::*;
+#[cfg(test)]
+use browser::{list_browser_entries, list_browser_entries_ext};
+#[cfg(test)]
+use cli::CliAction;
+#[cfg(test)]
+use commands::instr_editor_increment;
+#[cfg(test)]
+use note_utils::*;
+#[cfg(test)]
+use ratatui::{style::Color, Terminal};
+#[cfg(test)]
+use render::*;
+#[cfg(test)]
+use std::{path::PathBuf, sync::atomic::Ordering};
+#[cfg(test)]
+use vitakt_core::model::{ChainSlot, InterpMode, TRACKS};
+
 // ── Shared test utilities ─────────────────────────────────────────────────────
 
 /// Shared mutex for tests that mutate the `HOME` environment variable.
