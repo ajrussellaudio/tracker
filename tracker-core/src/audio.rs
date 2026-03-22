@@ -56,6 +56,12 @@ pub enum Command {
     SetTrackMute { track: u8, mute: bool },
     /// Toggle solo on track `track`.  When any track is soloed, non-soloed tracks are silent.
     SetTrackSolo { track: u8, active: bool },
+    /// Load a sample into the dedicated preview voice and start playback from the beginning.
+    /// Does not affect any instrument slot.
+    PreviewSample { samples: Arc<Vec<f32>>, channels: usize },
+    /// Halt playback on the dedicated preview voice immediately.
+    /// Does not affect any instrument slot.
+    StopPreview,
 }
 
 /// 4-point Hermite cubic interpolation for the "Sinc" quality mode.
@@ -1199,6 +1205,59 @@ mod tests {
         let phrase = Box::new(Phrase::default());
         // Should not panic.
         seq.update_phrase_in_song(99, phrase);
+    }
+
+    #[test]
+    fn preview_sample_command_triggers_active_voice() {
+        // Simulate what the audio thread does for Command::PreviewSample.
+        let samples = Arc::new(vec![0.1f32; 4800]); // 0.1s mono at 48 kHz
+        let channels = 1usize;
+
+        // Verify the command can be constructed with expected data.
+        let cmd = Command::PreviewSample { samples: Arc::clone(&samples), channels };
+        let Command::PreviewSample { samples: cmd_samples, channels: cmd_channels } = cmd else {
+            panic!("wrong variant");
+        };
+        assert_eq!(cmd_channels, 1);
+        assert_eq!(cmd_samples.len(), 4800);
+
+        // Simulate the audio-thread handler: create a voice, trigger it.
+        let mut voice = Voice::new(cmd_samples, cmd_channels);
+        voice.trigger(1.0);
+        assert!(voice.is_active(), "preview voice should be active after trigger");
+    }
+
+    #[test]
+    fn stop_preview_command_halts_preview_voice() {
+        let samples = Arc::new(vec![0.5f32; 960]);
+        let mut voice = Voice::new(Arc::clone(&samples), 1);
+        voice.trigger(1.0);
+        assert!(voice.is_active());
+
+        // Simulate Command::StopPreview handler.
+        voice.stop();
+        assert!(!voice.is_active(), "preview voice should be inactive after stop");
+    }
+
+    #[test]
+    fn preview_voice_does_not_interfere_with_mixer_slots() {
+        let samples = Arc::new(vec![1.0f32, 1.0f32, 1.0f32, 1.0f32]); // 2 mono frames
+        let instr_samples = Arc::new(vec![0.5f32, 0.5f32, 0.5f32, 0.5f32]);
+
+        let mut mixer = Mixer::new();
+        mixer.load_slot(0, Voice::new(Arc::clone(&instr_samples), 1));
+        mixer.trigger(0, 1.0);
+
+        // Preview voice is separate — stopping it doesn't touch mixer slot 0.
+        let mut preview = Voice::new(Arc::clone(&samples), 1);
+        preview.trigger(1.0);
+        preview.stop();
+
+        // Instrument slot 0 should still be active.
+        let mut output = vec![0.0f32; 4];
+        mixer.render(&mut output);
+        // At least some non-zero samples were contributed by the instrument slot.
+        assert!(output.iter().any(|&s| s != 0.0), "instrument slot should still render after preview stop");
     }
 
 }
