@@ -743,6 +743,28 @@ impl App {
         } else if let Some(dir) = raw.strip_prefix("export-stems ") {
             let dir = dir.trim().to_string();
             self.start_render_stems(dir);
+        } else if let Some(rest) = raw.strip_prefix("bpm") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                self.status = "Usage: :bpm <value>  (e.g. :bpm 140)".to_string();
+            } else {
+                match rest.parse::<f32>() {
+                    Ok(bpm) => {
+                        if !bpm.is_finite() {
+                            self.status = format!("Invalid BPM value: '{rest}' — expected a number");
+                        } else {
+                            let clamped = bpm.clamp(20.0, 999.0);
+                            self.record("set BPM");
+                            self.song.bpm = clamped;
+                            self.send_cmd(Command::SetBpm(clamped));
+                            self.set_timed_status(format!("BPM set to {clamped:.1}"));
+                        }
+                    }
+                    Err(_) => {
+                        self.status = format!("Invalid BPM value: '{rest}' — expected a number");
+                    }
+                }
+            }
         } else if raw.is_empty() {
             self.status =
                 "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
@@ -3235,6 +3257,67 @@ mod tests {
         app.cmd_buf = "e /nonexistent/file.trk".to_string();
         app.execute_command();
         assert!(app.status.starts_with("Error:"), "got: {}", app.status);
+    }
+
+    #[test]
+    fn execute_bpm_sets_song_bpm() {
+        let mut app = make_app();
+        app.cmd_buf = "bpm 140".to_string();
+        app.execute_command();
+        assert!((app.song.bpm - 140.0).abs() < 1e-4, "BPM should be 140.0, got {}", app.song.bpm);
+    }
+
+    #[test]
+    fn execute_bpm_clamps_below_minimum() {
+        let mut app = make_app();
+        app.cmd_buf = "bpm 10".to_string();
+        app.execute_command();
+        assert!((app.song.bpm - 20.0).abs() < 1e-4, "BPM should clamp to 20.0, got {}", app.song.bpm);
+    }
+
+    #[test]
+    fn execute_bpm_clamps_above_maximum() {
+        let mut app = make_app();
+        app.cmd_buf = "bpm 1000".to_string();
+        app.execute_command();
+        assert!((app.song.bpm - 999.0).abs() < 1e-4, "BPM should clamp to 999.0, got {}", app.song.bpm);
+    }
+
+    #[test]
+    fn execute_bpm_invalid_shows_error() {
+        let mut app = make_app();
+        app.cmd_buf = "bpm foo".to_string();
+        app.execute_command();
+        assert!(app.status.contains("Invalid BPM"), "expected error, got: {}", app.status);
+    }
+
+    #[test]
+    fn execute_bpm_no_value_shows_usage() {
+        let mut app = make_app();
+        app.cmd_buf = "bpm".to_string();
+        app.execute_command();
+        assert!(app.status.contains("Usage"), "expected usage hint, got: {}", app.status);
+    }
+
+    #[test]
+    fn execute_bpm_is_undoable() {
+        let mut app = make_app();
+        let original_bpm = app.song.bpm;
+        app.cmd_buf = "bpm 180".to_string();
+        app.execute_command();
+        assert!((app.song.bpm - 180.0).abs() < 1e-4);
+        app.do_undo();
+        assert!((app.song.bpm - original_bpm).abs() < 1e-4, "undo should restore original BPM");
+    }
+
+    #[test]
+    fn execute_bpm_nan_shows_error_and_does_not_corrupt_bpm() {
+        let mut app = make_app();
+        let original_bpm = app.song.bpm;
+        app.cmd_buf = "bpm nan".to_string();
+        app.execute_command();
+        assert!(app.status.contains("Invalid BPM"), "expected error, got: {}", app.status);
+        assert_eq!(app.song.bpm, original_bpm, "NaN must not corrupt song.bpm");
     }
 
     #[test]
