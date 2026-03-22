@@ -766,8 +766,7 @@ impl App {
                 }
             }
         } else if raw.is_empty() {
-            self.status =
-                "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
+            // No-op: Normal mode status bar shows its own fixed hint text.
         } else {
             self.status = format!("Unknown command: {raw}");
         }
@@ -1911,7 +1910,6 @@ fn run_tui(
         if let Some(timer) = app.status_timer {
             if timer.elapsed() >= Duration::from_secs(2) {
                 app.status_timer = None;
-                app.status = "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
             }
         }
 
@@ -2583,10 +2581,10 @@ fn run_tui(
                                     if app.yy_pending {
                                         app.yanked_step =
                                             Some(app.phrase().steps[app.cursor_step].clone());
-                                        app.status = format!(
+                                        app.set_timed_status(format!(
                                             "Yanked step {}",
                                             app.cursor_step
-                                        );
+                                        ));
                                         app.yy_pending = false;
                                     } else {
                                         app.yy_pending = true;
@@ -2617,9 +2615,6 @@ fn run_tui(
                             KeyCode::Esc => {
                                 app.mode = InputMode::Normal;
                                 app.fx_edit_buf.clear();
-                                app.status =
-                                    "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit"
-                                        .to_string();
                             }
                             KeyCode::Up => {
                                 app.cursor_step =
