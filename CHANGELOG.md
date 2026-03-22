@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Scrolling viewport in the sample browser: long directory listings now scroll so the cursor is always visible; viewport height is derived from the terminal size at draw time (#72)
+- `..` parent directory entry appears at the top of every non-root directory in the sample browser; pressing Enter on it navigates up just like Backspace (#73)
 
 ### Changed
 

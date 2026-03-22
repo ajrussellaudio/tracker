@@ -121,6 +121,8 @@ enum InputMode {
 enum BrowserEntry {
     Dir(String),
     Wav(String),
+    /// The synthetic `..` entry that navigates to the parent directory.
+    ParentDir,
 }
 
 impl BrowserEntry {
@@ -128,12 +130,14 @@ impl BrowserEntry {
         match self {
             BrowserEntry::Dir(name) => format!("{name}/"),
             BrowserEntry::Wav(name) => name.clone(),
+            BrowserEntry::ParentDir => "..".to_string(),
         }
     }
 
     fn sort_key(&self) -> String {
         match self {
             BrowserEntry::Dir(name) | BrowserEntry::Wav(name) => name.to_lowercase(),
+            BrowserEntry::ParentDir => String::new(), // sorts before everything else
         }
     }
 }
@@ -515,6 +519,9 @@ impl App {
     fn browser_enter(&mut self) {
         if let Some(entry) = self.browser_entries.get(self.browser_cursor).cloned() {
             match entry {
+                BrowserEntry::ParentDir => {
+                    self.browser_go_up();
+                }
                 BrowserEntry::Dir(name) => {
                     self.browser_dir = self.browser_dir.join(&name);
                     let ext = match self.browser_mode {
@@ -1052,6 +1059,10 @@ fn list_browser_entries_ext(dir: &std::path::Path, file_ext: &str) -> Vec<Browse
         }
     }
     entries.sort_by_key(|e| e.sort_key());
+    // Prepend `..` when we're not at the filesystem root.
+    if dir.parent().is_some() {
+        entries.insert(0, BrowserEntry::ParentDir);
+    }
     entries
 }
 
@@ -1735,7 +1746,7 @@ fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'static
         };
         for (i, entry) in app.browser_entries[scroll..end].iter().enumerate() {
             let abs_idx = scroll + i;
-            let is_dir = matches!(entry, BrowserEntry::Dir(_));
+            let is_dir = matches!(entry, BrowserEntry::Dir(_) | BrowserEntry::ParentDir);
             let display = entry.display_name();
             let (prefix, style) = if abs_idx == app.browser_cursor {
                 ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
@@ -3562,7 +3573,9 @@ mod tests {
             }
         }
         let entries = list_browser_entries(&dir);
-        assert!(entries.is_empty(), "empty dir should yield no entries");
+        // An empty non-root directory should contain only the synthetic `..` entry.
+        assert_eq!(entries.len(), 1, "empty non-root dir should yield exactly the '..' entry");
+        assert!(matches!(entries[0], BrowserEntry::ParentDir), "first entry should be ParentDir");
     }
 
     #[test]
@@ -4301,6 +4314,70 @@ mod tests {
         std::fs::remove_file(subdir.join("kick.wav")).ok();
         std::fs::remove_dir(&subdir).ok();
         std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn list_browser_entries_has_parent_dir_for_non_root() {
+        let dir = std::env::temp_dir().join("vitakt_parent_dir_test");
+        std::fs::create_dir_all(&dir).ok();
+        let entries = list_browser_entries(&dir);
+        assert!(
+            matches!(entries.first(), Some(BrowserEntry::ParentDir)),
+            "first entry should be ParentDir for a non-root directory"
+        );
+    }
+
+    #[test]
+    fn list_browser_entries_no_parent_dir_at_root() {
+        let root = std::path::Path::new("/");
+        let entries = list_browser_entries(root);
+        assert!(
+            !entries.iter().any(|e| matches!(e, BrowserEntry::ParentDir)),
+            "ParentDir should not appear when browsing /"
+        );
+    }
+
+    #[test]
+    fn browser_enter_on_parent_dir_goes_up() {
+        let parent = std::env::temp_dir().join("vitakt_enter_parent_test");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).ok();
+
+        let mut app = make_app();
+        app.browser_dir = child.clone();
+        app.browser_entries = list_browser_entries(&child);
+        // ParentDir is the first entry
+        app.browser_cursor = 0;
+        assert!(matches!(app.browser_entries[0], BrowserEntry::ParentDir));
+
+        app.browser_enter();
+
+        assert_eq!(app.browser_dir, parent, "Enter on .. should navigate to parent");
+        assert_eq!(app.browser_cursor, 0, "cursor should reset after navigating up");
+
+        std::fs::remove_dir(&child).ok();
+        std::fs::remove_dir(&parent).ok();
+    }
+
+    #[test]
+    fn parent_dir_is_never_included_in_wav_entries() {
+        let dir = std::env::temp_dir().join("vitakt_parent_not_wav_test");
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("test.wav"), b"RIFF").ok();
+
+        let entries = list_browser_entries(&dir);
+        let wavs: Vec<_> = entries.iter().filter(|e| matches!(e, BrowserEntry::Wav(_))).collect();
+        let parent_dirs: Vec<_> = entries.iter().filter(|e| matches!(e, BrowserEntry::ParentDir)).collect();
+
+        assert_eq!(parent_dirs.len(), 1, "should have exactly one ParentDir");
+        assert_eq!(wavs.len(), 1, "should have exactly one Wav entry");
+        assert!(
+            matches!(entries.first(), Some(BrowserEntry::ParentDir)),
+            "ParentDir should be the first entry"
+        );
+
+        std::fs::remove_file(dir.join("test.wav")).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 }
 
