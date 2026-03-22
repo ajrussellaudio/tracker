@@ -993,6 +993,9 @@ fn start_audio_stream(
 
     let mut sequencer = Sequencer::new(48000.0, initial_bpm);
 
+    // Dedicated preview voice — separate from the 16 instrument slots.
+    let mut preview_voice: Option<Voice> = None;
+
     // Per-track mixer state: updated by SetTrackVolume/Pan/Mute/Solo commands.
     let mut track_volumes = [1.0f32; TRACKS];
     let mut track_pans = [0.0f32; TRACKS];
@@ -1090,6 +1093,14 @@ fn start_audio_stream(
                             track_solo[track as usize] = active;
                         }
                     }
+                    Command::PreviewSample { samples, channels } => {
+                        let mut v = Voice::new(samples, channels);
+                        v.trigger(1.0);
+                        preview_voice = Some(v);
+                    }
+                    Command::StopPreview => {
+                        preview_voice = None;
+                    }
                 }
             }
 
@@ -1150,6 +1161,14 @@ fn start_audio_stream(
             }
 
             mixer.render(data);
+
+            // Mix the preview voice on top of the instrument voices.
+            if let Some(pv) = preview_voice.as_mut() {
+                pv.render(data);
+                if !pv.is_active() {
+                    preview_voice = None;
+                }
+            }
         },
         |err| eprintln!("audio stream error: {err}"),
         None,
