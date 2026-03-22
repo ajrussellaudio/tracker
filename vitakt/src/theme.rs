@@ -446,12 +446,13 @@ mod tests {
         }
     }
 
-    // Mutex to serialise tests that mutate the HOME env var.
-    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Use the shared HOME mutex from the crate root to serialise all tests that
+    // mutate the HOME env var (theme tests + config tests must use the same lock).
+    use crate::HOME_MUTEX;
 
     #[test]
     fn migration_copies_legacy_config_to_new_path() {
-        let _guard = HOME_MUTEX.lock().unwrap();
+        let _guard = HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = std::env::temp_dir().join("vitakt_theme_migration_test");
         let legacy_dir = tmp.join(".config").join("tracker");
@@ -466,13 +467,15 @@ mod tests {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.to_str().unwrap());
 
-        let theme = load();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load()));
 
-        // Restore HOME before any assertions that might panic.
-        match original_home {
+        // Restore HOME and clean up even if load() panicked.
+        match &original_home {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
         }
+
+        let theme = result.unwrap_or_else(|e| std::panic::resume_unwind(e));
 
         assert!(new_path.exists(), "vitakt config should have been created by migration");
         // Verify the theme was loaded from the migrated file — the exact Color variant

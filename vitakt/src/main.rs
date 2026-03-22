@@ -40,6 +40,14 @@ use vitakt_core::{
     storage,
 };
 
+// ── Shared test utilities ─────────────────────────────────────────────────────
+
+/// Shared mutex for tests that mutate the `HOME` environment variable.
+/// All test modules that set/restore HOME must use this single mutex so they
+/// don't race with each other (e.g. theme tests vs. config tests).
+#[cfg(test)]
+pub(crate) static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 /// Top-level view the TUI is showing.

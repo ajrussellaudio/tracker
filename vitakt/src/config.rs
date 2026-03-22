@@ -104,24 +104,32 @@ fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // Mutex to serialise tests that mutate HOME.
-    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Mutex to serialise tests that mutate HOME — shared with theme tests via crate root.
+    use crate::HOME_MUTEX;
 
     /// Set HOME to a temp directory for the duration of the closure, then restore it.
+    /// Uses catch_unwind so HOME is always restored even if the closure panics.
     fn with_tmp_home<F: FnOnce(std::path::PathBuf)>(f: F) {
-        let _guard = HOME_MUTEX.lock().unwrap();
+        let _guard = HOME_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir()
             .join(format!("vitakt_config_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.to_str().unwrap());
-        f(tmp.clone());
-        match original_home {
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tmp.clone())));
+
+        // Always restore HOME and clean up, even if f() panicked.
+        match &original_home {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
