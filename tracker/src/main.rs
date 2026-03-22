@@ -812,6 +812,7 @@ impl App {
         let current = self.song.clone();
         if let Some((snapshot, desc)) = self.history.undo(current) {
             self.song = snapshot;
+            self.is_dirty = true;
             self.set_timed_status(format!("Undid: {desc}"));
             self.sync_phrase_to_sequencer();
             self.sync_song_to_sequencer();
@@ -826,6 +827,7 @@ impl App {
         let current = self.song.clone();
         if let Some((snapshot, desc)) = self.history.redo(current) {
             self.song = snapshot;
+            self.is_dirty = true;
             self.set_timed_status(format!("Redid: {desc}"));
             self.sync_phrase_to_sequencer();
             self.sync_song_to_sequencer();
