@@ -2,6 +2,7 @@ pub mod audio;
 pub mod model;
 pub mod render;
 pub mod storage;
+pub mod waveform;
 
 pub use model::{
     Chain, ChainSlot, FxCommand, FxSlot, Instrument, InterpMode, MixerTrack, Phrase, Sample,
