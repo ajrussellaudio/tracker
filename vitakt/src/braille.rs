@@ -74,7 +74,7 @@ pub fn render_waveform(
                     let excursion = (amp * center as f32) as usize;
                     (center.saturating_sub(excursion), center)
                 } else {
-                    let excursion = ((-amp) * (total_dot_rows - 1 - center) as f32) as usize;
+                    let excursion = ((-amp) * center as f32) as usize;
                     (center, (center + excursion).min(total_dot_rows - 1))
                 }
             })
@@ -283,6 +283,59 @@ mod tests {
             }
             assert!(found, "no span found starting at column {expected_col}");
         }
+    }
+
+    #[test]
+    fn zero_amplitude_renders_center_braille_dot_line() {
+        // Verifies actual braille character content for a flat zero signal.
+        // height=1 → 4 dot rows, center=2.
+        // amp=0 → only dot row 2 is lit for every dot-column.
+        // Row 0, col 1 (handles map to col 0): LEFT_DOTS[2]=0x04 and RIGHT_DOTS[2]=0x20.
+        // Expected character: U+2824 (⠤)
+        let samples = vec![0.0f32];
+        let handles = WaveformHandles {
+            sample_start: 0,
+            sample_end: 0,
+            loop_start: 0,
+            loop_end: 0,
+            active: ActiveHandle::SampleStart,
+        };
+        let lines = render_waveform(&samples, 2, 1, &handles);
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let col1_char = text.chars().nth(1).unwrap();
+        assert_eq!(
+            col1_char, '\u{2824}',
+            "zero amplitude at col 1 should render as ⠤ (U+2824, center dots only)"
+        );
+    }
+
+    #[test]
+    fn negative_amplitude_renders_symmetrically_to_positive() {
+        // Regression test for the asymmetric-scaling bug in the negative excursion branch.
+        // With height=2, amp=-0.5 and the fix (excursion = (-amp) * center):
+        //   total_dot_rows=8, center=4, excursion = 0.5*4 = 2 dot rows
+        //   lit range: [4, 6] → dot rows 4, 5, 6
+        // Row 1 (dot rows 4-7), col 1: dot_rows 0,1,2 of that cell are lit.
+        //   bits = 0x2800 | 0x01|0x02|0x04 | 0x08|0x10|0x20 = 0x283F → '⠿'
+        // With the old buggy code (excursion = (-amp) * (total_dot_rows-1-center)),
+        // excursion would be 0.5*3=1, producing a different (shorter) character.
+        let samples = vec![-0.5f32];
+        let handles = WaveformHandles {
+            sample_start: 0,
+            sample_end: 0,
+            loop_start: 0,
+            loop_end: 0,
+            active: ActiveHandle::SampleStart,
+        };
+        let lines = render_waveform(&samples, 2, 2, &handles);
+        assert_eq!(lines.len(), 2);
+        let row1_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let col1_char = row1_text.chars().nth(1).unwrap();
+        assert_eq!(
+            col1_char, '\u{283F}',
+            "negative -0.5 at bottom row col 1 should render as ⠿ (U+283F) after symmetry fix"
+        );
     }
 
     #[test]
