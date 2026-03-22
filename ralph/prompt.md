@@ -68,7 +68,9 @@ Launch a **general-purpose sub-agent** with this prompt:
 
 **If LGTM:** post an APPROVED comment (see below) and proceed to **[Merge Mode](#merge-mode)**.
 
-**If issues found:** post a REQUEST_CHANGES comment (see below) and stop. The next iteration enters Fix Mode.
+**If issues found:** post a REQUEST_CHANGES comment (see below), then emit the following token as your **final output** and end your response immediately:
+
+<promise>STOP</promise>
 
 ### Round 2
 
@@ -88,7 +90,9 @@ Launch a **general-purpose sub-agent** with this prompt:
 
 **If LGTM (all resolved):** post an APPROVED comment and proceed to **[Merge Mode](#merge-mode)**.
 
-**If any issues are UNRESOLVED:** this is the final round — post a REQUEST_CHANGES comment listing only the still-unresolved items. The next check will Force-Approve regardless.
+**If any issues are UNRESOLVED:** this is the final round — post a REQUEST_CHANGES comment listing only the still-unresolved items. Then emit the following token as your **final output** and end your response immediately:
+
+<promise>STOP</promise>
 
 ---
 
@@ -138,7 +142,9 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` comment that needs addr
 5. Run the test command (see `ralph/project.md`) using a sub-agent. Fix any failures.
 6. Commit: `git commit -m "fix: address review comments on PR #<N>"`
 7. Push: `git push origin ralph/issue-<N>`
-8. **Stop. Do not proceed to any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
+8. Emit the following token as your **final output** and end your response immediately:
+
+   <promise>STOP</promise>
 
 ---
 
@@ -191,7 +197,9 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    - If the rebase succeeds and the test command (see `ralph/project.md`) passes: `git push --force-with-lease origin ralph/issue-<M>`
    - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run the test command (see `ralph/project.md`) to verify. If tests pass, continue the rebase and push.
    - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
-4. **Stop. Do not proceed to Implement Mode or any other mode. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart.
+4. Emit the following token as your **final output** and end your response immediately:
+
+   <promise>STOP</promise>
 
 ---
 
@@ -247,7 +255,9 @@ Do **not** close the GitHub issue manually — it will be closed automatically w
 
 ### Step 6 — Stop
 
-**Stop here. Do not emit `<promise>COMPLETE</promise>`.** The loop will restart and enter Review Mode next iteration.
+Emit the following token as your **final output** and end your response immediately. The loop will restart and enter Review Mode next iteration:
+
+<promise>STOP</promise>
 
 ---
 
@@ -260,7 +270,9 @@ Do **not** close the GitHub issue manually — it will be closed automatically w
 
   <promise>COMPLETE</promise>
 
-- **Otherwise:** stop here. The loop will restart.
+- **Otherwise:** emit the following token as your **final output** and end your response immediately:
+
+  <promise>STOP</promise>
 
 ---
 

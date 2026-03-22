@@ -109,6 +109,11 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     exit 0
   fi
 
+  if echo "$OUTPUT" | grep -q "<promise>STOP</promise>"; then
+    echo ""
+    echo "  ✔  Ralph stopped cleanly at iteration $i. Restarting loop."
+  fi
+
   echo ""
   echo "  Iteration $i done. $(( MAX_ITERATIONS - i )) iteration(s) remaining."
   sleep 2
