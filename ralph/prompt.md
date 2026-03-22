@@ -197,7 +197,21 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    - If the rebase succeeds and the test command (see `ralph/project.md`) passes: `git push --force-with-lease origin ralph/issue-<M>`
    - **If there are conflicts:** attempt to resolve them — read the conflicting files, understand what both sides are doing, and apply the resolution that preserves both sets of changes. Run the test command (see `ralph/project.md`) to verify. If tests pass, continue the rebase and push.
    - **If you cannot resolve a conflict confidently** (e.g. tests keep failing, or the conflict is in generated/binary files): run `git rebase --abort`, open a GitHub issue titled `⚠️ Downstream rebase conflict: ralph/issue-<M>` describing the conflicting files and what the conflict is about, and stop.
-4. Emit the following token as your **final output** and end your response immediately:
+4. Unblock any issues that were waiting on the issue you just closed (`#<X>`, where `<X>` is the issue number closed by PR `#<N>`):
+   - Fetch all open issues that carry the `blocked` label:
+     ```bash
+     gh issue list --repo <repo> --label blocked --json number,body --limit 100
+     ```
+   - For each, check whether its body contains `Blocked by #<X>` (case-insensitive).
+   - If it does, inspect the body for **any other** `Blocked by #Y` references. For each such `#Y`, check whether issue `#Y` is still open:
+     ```bash
+     gh issue view <Y> --repo <repo> --json state -q .state
+     ```
+   - If **all** blocking issues are now closed (i.e. no remaining open blockers), remove the `blocked` label:
+     ```bash
+     gh issue edit <issue-number> --repo <repo> --remove-label "blocked"
+     ```
+5. Emit the following token as your **final output** and end your response immediately:
 
    <promise>STOP</promise>
 
