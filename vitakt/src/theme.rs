@@ -185,9 +185,12 @@ pub fn load() -> Theme {
         if let Some(old_path) = legacy_config_path() {
             if old_path.exists() {
                 if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        eprintln!("vitakt: theme warning: could not create config dir {:?}: {} — using terminal defaults", parent, e);
+                    } else if let Err(e) = std::fs::copy(&old_path, &path) {
+                        eprintln!("vitakt: theme warning: could not migrate theme from {:?}: {} — using terminal defaults", old_path, e);
+                    }
                 }
-                let _ = std::fs::copy(&old_path, &path);
             }
         }
     }
@@ -441,5 +444,39 @@ mod tests {
             keyboard_mode_bg: resolve!(config.keyboard_mode_bg, "keyboard_mode_bg"),
             playback_head_bg: resolve!(config.playback_head_bg, "playback_head_bg", Color::Rgb(0, 95, 135)),
         }
+    }
+
+    // Mutex to serialise tests that mutate the HOME env var.
+    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn migration_copies_legacy_config_to_new_path() {
+        let _guard = HOME_MUTEX.lock().unwrap();
+
+        let tmp = std::env::temp_dir().join("vitakt_theme_migration_test");
+        let legacy_dir = tmp.join(".config").join("tracker");
+        let legacy_path = legacy_dir.join("theme.toml");
+        let new_path = tmp.join(".config").join("vitakt").join("theme.toml");
+
+        // Clean up from any previous run.
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(&legacy_path, r##"cursor_bg = "#FF8C00""##).unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.to_str().unwrap());
+
+        let theme = load();
+
+        // Restore HOME before any assertions that might panic.
+        match original_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(new_path.exists(), "vitakt config should have been created by migration");
+        assert_eq!(theme.cursor_bg, Color::Rgb(0xFF, 0x8C, 0x00));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
