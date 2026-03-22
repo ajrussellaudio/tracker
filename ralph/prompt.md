@@ -269,9 +269,13 @@ Do **not** close the GitHub issue manually — it will be closed automatically w
 
 ### Step 6 — Stop
 
-Emit the following token as your **final output** and end your response immediately. The loop will restart and enter Review Mode next iteration:
+**Do not proceed to Review Mode or any other mode. Your work this iteration is done.**
+
+Emit this token as your final output:
 
 <promise>STOP</promise>
+
+Any output after this token violates the ground rules.
 
 ---
 
@@ -293,6 +297,7 @@ Emit the following token as your **final output** and end your response immediat
 ## Ground rules
 
 - **One task per iteration.** Implement one issue, OR review one PR, OR fix one PR, OR merge one PR. Never more than one.
+- **Never chain modes in one iteration.** After opening a PR (Implement Mode Step 6), do not start Review Mode. After posting a review comment (Review Mode), do not start Fix Mode. Each mode ends with `<promise>STOP</promise>` and the loop restarts.
 - **`<promise>COMPLETE</promise>` may only be emitted from Step 7.** Never emit it from inside a mode (Implement, Review, Fix, Merge, etc.).
 - **Protect your context window.** Delegate test runs, file reads, and summarisation to sub-agents.
 - **Commits must not break the build.** Every commit should leave the repo in a buildable, passing state.
