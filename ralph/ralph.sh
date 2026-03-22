@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ralph — Long-running Copilot CLI agent loop
+# Ralph — Long-running Copilot CLI agent loop with bash-side mode routing
 #
 # Usage:
 #   ./ralph.sh <max_iterations>
@@ -7,19 +7,26 @@
 # Example:
 #   ./ralph.sh 20
 #
-# Each iteration runs Copilot inside a dedicated git worktree so your
-# main checkout is never touched while Ralph is running. The worktree is
-# created on startup and removed automatically on exit (even on error).
+# Each iteration:
+#   1. Checks GitHub for open ralph PRs or open issues (in bash)
+#   2. Determines which mode to run (implement, review, review-round2, fix,
+#      force-approve, or merge)
+#   3. Loads the mode-specific prompt from ralph/modes/<mode>.md
+#   4. Substitutes {{REPO}}, {{PR_NUMBER}}, {{ISSUE_NUMBER}} placeholders
+#   5. Runs Copilot with that focused, self-contained prompt
 #
-# The loop stops early if Copilot emits <promise>COMPLETE</promise> in its
-# output, signalling that all GitHub issues have been resolved.
+# The loop stops early if Copilot emits <promise>COMPLETE</promise> or if
+# bash routing finds no open PRs and no open issues.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-PROMPT_FILE="$SCRIPT_DIR/prompt.md"
+MODES_DIR="$SCRIPT_DIR/modes"
 WORKTREE_DIR="${GIT_ROOT%/*}/$(basename "$GIT_ROOT")-ralph-workspace"
+
+# Extract repo slug from project.md (line: "**GitHub repo:** `owner/name`")
+REPO=$(grep -m1 'GitHub repo' "$SCRIPT_DIR/project.md" | grep -oE '`[^`]+`' | tr -d '`')
 
 # ── Argument validation ────────────────────────────────────────────────────────
 
@@ -44,8 +51,13 @@ if ! command -v copilot &>/dev/null; then
   exit 1
 fi
 
-if [[ ! -f "$PROMPT_FILE" ]]; then
-  echo "Error: Prompt file not found at $PROMPT_FILE"
+if [[ ! -d "$MODES_DIR" ]]; then
+  echo "Error: Modes directory not found at $MODES_DIR"
+  exit 1
+fi
+
+if [[ -z "$REPO" ]]; then
+  echo "Error: Could not extract repo slug from $SCRIPT_DIR/project.md"
   exit 1
 fi
 
@@ -75,6 +87,101 @@ echo ""
 echo "  Creating worktree at $WORKTREE_DIR …"
 git -C "$GIT_ROOT" worktree add --detach "$WORKTREE_DIR" origin/main
 
+# ── Routing ────────────────────────────────────────────────────────────────────
+
+# Populates MODE, PR_NUMBER, ISSUE_NUMBER based on current GitHub state.
+# MODE is one of: implement | review | review-round2 | fix | force-approve | merge | complete
+determine_mode() {
+  PR_NUMBER=""
+  ISSUE_NUMBER=""
+
+  echo "  🔄 Syncing workspace…"
+  (cd "$WORKTREE_DIR" && git fetch origin && git reset --hard origin/main) > /dev/null 2>&1
+
+  echo "  🔍 Checking for open ralph PRs in $REPO…"
+  OPEN_RALPH_PRS=$(gh pr list --repo "$REPO" --state open \
+    --json number,headRefName \
+    --jq '[.[] | select(.headRefName | startswith("ralph/issue-"))] | sort_by(.number)' \
+    < /dev/null 2>/dev/null || echo "[]")
+
+  PR_COUNT=$(echo "$OPEN_RALPH_PRS" | jq length)
+
+  if [[ "$PR_COUNT" -gt 0 ]]; then
+    PR_NUMBER=$(echo "$OPEN_RALPH_PRS" | jq -r '.[0].number')
+
+    COMMENT_BODIES=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+      --json comments --jq '[.comments[].body] | join("\n---\n")' \
+      < /dev/null 2>/dev/null || echo "")
+
+    APPROVED=$(echo "$COMMENT_BODIES" | grep -c "RALPH-REVIEW: APPROVED" 2>/dev/null || true)
+    CHANGES_REQUESTED=$(echo "$COMMENT_BODIES" | grep -c "RALPH-REVIEW: REQUEST_CHANGES" 2>/dev/null || true)
+
+    if [[ "${APPROVED:-0}" -gt 0 ]]; then
+      MODE="merge"
+    elif [[ "${CHANGES_REQUESTED:-0}" -ge 2 ]]; then
+      MODE="force-approve"
+    elif [[ "${CHANGES_REQUESTED:-0}" -eq 1 ]]; then
+      # If commits were pushed after the REQUEST_CHANGES comment → round 2 review
+      # Otherwise → fix mode (no new commits yet)
+      LAST_RC_TIME=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+        --json comments \
+        --jq '[.comments[] | select(.body | contains("RALPH-REVIEW: REQUEST_CHANGES"))] | last | .createdAt // ""' \
+        < /dev/null 2>/dev/null || echo "")
+      LATEST_COMMIT_TIME=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+        --json commits \
+        --jq '.commits | last | .committedDate // ""' \
+        < /dev/null 2>/dev/null || echo "")
+
+      if [[ -n "$LATEST_COMMIT_TIME" && -n "$LAST_RC_TIME" && "$LATEST_COMMIT_TIME" > "$LAST_RC_TIME" ]]; then
+        MODE="review-round2"
+      else
+        MODE="fix"
+      fi
+    else
+      MODE="review"
+    fi
+
+    echo "  ▶  Mode: $MODE  (PR #$PR_NUMBER)"
+  else
+    echo "  🔍 No open ralph PRs — checking issues…"
+
+    # Pick highest-priority open issue: high-priority label first, then lowest number
+    ISSUE_NUMBER=$(gh issue list --repo "$REPO" --state open \
+      --json number,labels --limit 100 \
+      --jq '
+        [.[] | select(.labels | map(.name) | (contains(["prd"]) or contains(["blocked"])) | not)]
+        | (
+            (map(select(.labels | map(.name) | contains(["high priority"]))) | sort_by(.number) | first)
+            // (sort_by(.number) | first)
+          )
+        | .number // empty
+      ' \
+      < /dev/null 2>/dev/null || echo "")
+
+    if [[ -n "$ISSUE_NUMBER" ]]; then
+      MODE="implement"
+      echo "  ▶  Mode: $MODE  (Issue #$ISSUE_NUMBER)"
+    else
+      MODE="complete"
+      echo "  ▶  Mode: $MODE  (no open issues or PRs)"
+    fi
+  fi
+}
+
+# Loads the mode file and substitutes {{REPO}}, {{PR_NUMBER}}, {{ISSUE_NUMBER}}.
+build_prompt() {
+  local mode_file="$MODES_DIR/$MODE.md"
+  if [[ ! -f "$mode_file" ]]; then
+    echo "  ❌  Mode file not found: $mode_file"
+    exit 1
+  fi
+
+  PROMPT=$(cat "$mode_file")
+  PROMPT="${PROMPT//\{\{REPO\}\}/$REPO}"
+  PROMPT="${PROMPT//\{\{PR_NUMBER\}\}/$PR_NUMBER}"
+  PROMPT="${PROMPT//\{\{ISSUE_NUMBER\}\}/$ISSUE_NUMBER}"
+}
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 echo ""
@@ -85,17 +192,32 @@ echo "╚═══════════════════════�
 
 for i in $(seq 1 "$MAX_ITERATIONS"); do
   echo ""
+  printf "\033[1;36m"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  Iteration $i / $MAX_ITERATIONS"
+  echo "  🤖 Ralph — iteration $i / $MAX_ITERATIONS"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  # Update terminal tab/window title and tmux window name so the
-  # iteration is always visible regardless of scroll position.
+  printf "\033[0m"
+
+  # Update terminal tab/window title and tmux window name.
   printf "\033]0;🤖 Ralph — iteration %s / %s\007" "$i" "$MAX_ITERATIONS"
   printf "\033k🤖 Ralph %s/%s\033\\" "$i" "$MAX_ITERATIONS"
 
-  # Run Copilot inside the worktree so it sees that directory as the repo root.
-  # Output is streamed live to the terminal and also captured for signal detection.
-  PROMPT="$(cat "$PROMPT_FILE")"
+  MODE=""
+  determine_mode
+
+  # All done — no copilot needed
+  if [[ "$MODE" == "complete" ]]; then
+    echo ""
+    printf "\033[1;32m"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  ✅  Ralph completed all tasks at iteration $i / $MAX_ITERATIONS"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "\033[0m"
+    exit 0
+  fi
+
+  build_prompt
+
   OUTPUT=$(
     cd "$WORKTREE_DIR" && copilot \
       --prompt "$PROMPT" \
@@ -104,18 +226,21 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
       2>&1 | tee /dev/stderr
   ) || true
 
-  # Check for completion signal
+  # Belt-and-suspenders COMPLETE check (bash routing handles this now, but
+  # keep the signal detection in case a mode emits it unexpectedly)
   if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
     echo ""
+    printf "\033[1;32m"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  ✅  Ralph completed all tasks at iteration $i / $MAX_ITERATIONS"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "\033[0m"
     exit 0
   fi
 
   if echo "$OUTPUT" | grep -q "<promise>STOP</promise>"; then
     echo ""
-    echo "  ✔  Ralph stopped cleanly at iteration $i. Restarting loop."
+    echo "  ✔  Iteration $i / $MAX_ITERATIONS done — restarting"
   fi
 
   echo ""
@@ -132,6 +257,6 @@ echo "       receiving a completion signal."
 echo ""
 echo "  Options:"
 echo "    • Run again with more iterations to continue"
-echo "    • Tune ralph/prompt.md if Copilot is going in the wrong direction"
+echo "    • Tune ralph/modes/ if Copilot is going in the wrong direction"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 exit 1

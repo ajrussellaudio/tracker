@@ -1,7 +1,7 @@
 #!/bin/bash
 # ralph/contribute-upstream.sh
 #
-# Propagate changes to ralph.sh and/or prompt.md back to ajrussellaudio/ralph.
+# Propagate changes to ralph.sh and/or modes/ back to ajrussellaudio/ralph.
 # project.md is intentionally excluded — it is tracker-specific.
 #
 # Usage:
@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPSTREAM_REPO="ajrussellaudio/ralph"
-GENERIC_FILES=("ralph.sh" "prompt.md")
+GENERIC_FILES=("ralph.sh")
 WORK_DIR=$(mktemp -d)
 BRANCH="contrib/tracker-$(date +%Y%m%d-%H%M%S)"
 PR_TITLE="${1:-"chore: sync improvements from tracker"}"
@@ -46,12 +46,26 @@ for f in "${GENERIC_FILES[@]}"; do
   fi
 done
 
-if [[ ${#CHANGED[@]} -eq 0 ]]; then
+# Check modes/ directory (add any new or changed mode files)
+MODES_CHANGED=()
+if [[ -d "$SCRIPT_DIR/modes" ]]; then
+  mkdir -p "$WORK_DIR/modes"
+  while IFS= read -r -d '' mode_file; do
+    rel="${mode_file#$SCRIPT_DIR/}"
+    if ! diff -q "$mode_file" "$WORK_DIR/$rel" > /dev/null 2>&1; then
+      MODES_CHANGED+=("$rel")
+    fi
+  done < <(find "$SCRIPT_DIR/modes" -name "*.md" -print0)
+fi
+
+ALL_CHANGED=("${CHANGED[@]}" "${MODES_CHANGED[@]}")
+
+if [[ ${#ALL_CHANGED[@]} -eq 0 ]]; then
   echo "  No differences found — $UPSTREAM_REPO is already up to date."
   exit 0
 fi
 
-echo "  Changed: ${CHANGED[*]}"
+echo "  Changed: ${ALL_CHANGED[*]}"
 
 # ── Build PR body ──────────────────────────────────────────────────────────────
 
@@ -68,6 +82,13 @@ PR_BODY_FILE=$(mktemp)
     echo '```'
     echo ""
   done
+  for f in "${MODES_CHANGED[@]}"; do
+    echo "### \`$f\`"
+    echo '```diff'
+    diff "$WORK_DIR/$f" "$SCRIPT_DIR/$f" 2>/dev/null || cat "$SCRIPT_DIR/$f"
+    echo '```'
+    echo ""
+  done
   echo "_\`project.md\` is not included — it is tracker-specific config._"
 } > "$PR_BODY_FILE"
 
@@ -79,8 +100,11 @@ git checkout -b "$BRANCH"
 for f in "${CHANGED[@]}"; do
   cp "$SCRIPT_DIR/$f" "$f"
 done
+for f in "${MODES_CHANGED[@]}"; do
+  cp "$SCRIPT_DIR/$f" "$f"
+done
 
-git add "${CHANGED[@]}"
+git add "${ALL_CHANGED[@]}"
 git commit -m "$PR_TITLE"
 git push origin "$BRANCH"
 
