@@ -1393,6 +1393,69 @@ mod tests {
 
         std::fs::remove_dir(&dest).ok();
     }
+
+    #[test]
+    fn browser_launch_external_loads_wav_from_chooser_file() {
+        let dir = std::env::temp_dir().join("vitakt_ext_browser_wav_test");
+        std::fs::create_dir_all(&dir).ok();
+        let wav_path = dir.join("kick.wav");
+        std::fs::write(&wav_path, b"RIFF").ok();
+        let wav_str = wav_path.to_string_lossy().to_string();
+
+        let mut app = make_app();
+        app.open_instrument_editor();
+        app.open_sample_browser();
+
+        // Call the loading branch directly with the wav path so the test does not
+        // depend on subprocess execution (which may fail in CI environments).
+        app.browser_apply_chooser_result(&wav_str);
+
+        let instr = &app.song.instruments[app.active_instrument];
+        assert!(instr.sample.is_some(), "sample should be set after selecting a .wav");
+        assert_eq!(
+            instr.sample.as_ref().unwrap().path,
+            wav_str,
+            "sample path should match the chosen wav"
+        );
+        assert!(
+            matches!(app.view, View::InstrumentEditor),
+            "view should pop back to InstrumentEditor"
+        );
+
+        std::fs::remove_file(&wav_path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn browser_launch_external_ignores_non_wav_selection() {
+        let dir = std::env::temp_dir().join("vitakt_ext_browser_nonwav_test");
+        std::fs::create_dir_all(&dir).ok();
+        let txt_path = dir.join("not_a_sample.txt");
+        std::fs::write(&txt_path, b"hello").ok();
+        let txt_str = txt_path.to_string_lossy().to_string();
+
+        let mut app = make_app();
+        app.open_instrument_editor();
+        app.open_sample_browser();
+        app.ensure_instrument(app.active_instrument);
+        let initial_sample = app.song.instruments[app.active_instrument].sample.clone();
+
+        // Call the loading branch directly with a non-.wav path.
+        app.browser_apply_chooser_result(&txt_str);
+
+        let instr = &app.song.instruments[app.active_instrument];
+        assert_eq!(
+            instr.sample, initial_sample,
+            "instrument sample must be unchanged when a non-.wav is selected"
+        );
+        assert!(
+            matches!(app.view, View::SampleBrowser),
+            "view should remain SampleBrowser when selection is ignored"
+        );
+
+        std::fs::remove_file(&txt_path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
 }
 
 

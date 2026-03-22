@@ -81,6 +81,11 @@ pub fn run_tui(
             }
         }
 
+        if app.needs_terminal_clear {
+            app.needs_terminal_clear = false;
+            terminal.clear()?;
+        }
+
         terminal.draw(|frame| {
             let size = frame.area();
             let outer = Layout::default()
@@ -308,8 +313,13 @@ pub fn run_tui(
                         }
                     }
                     View::SampleBrowser => {
+                        let external_hint = if app.config.file_browser.is_some() {
+                            "  e: external"
+                        } else {
+                            ""
+                        };
                         format!(
-                            "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel  ({} entries)",
+                            "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here{external_hint}  Esc: cancel  ({} entries)",
                             app.browser_entries.len()
                         )
                     }

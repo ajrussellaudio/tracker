@@ -72,6 +72,7 @@ impl App {
             config: Config::load(),
             browser_show_bookmarks: false,
             browser_bookmark_cursor: 0,
+            needs_terminal_clear: false,
         }
     }
 

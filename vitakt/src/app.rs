@@ -177,4 +177,6 @@ pub struct App {
     pub browser_show_bookmarks: bool,
     /// Sample browser: cursor index within the bookmark overlay list.
     pub browser_bookmark_cursor: usize,
+    /// Set by `browser_launch_external`; tui.rs calls `terminal.clear()` before the next draw.
+    pub needs_terminal_clear: bool,
 }
