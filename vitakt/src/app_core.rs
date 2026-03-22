@@ -73,6 +73,9 @@ impl App {
             browser_show_bookmarks: false,
             browser_bookmark_cursor: 0,
             needs_terminal_clear: false,
+            waveform_samples: Vec::new(),
+            waveform_original_frames: 0,
+            waveform_active_handle: crate::braille::ActiveHandle::SampleStart,
         }
     }
 
@@ -163,6 +166,54 @@ impl App {
         self.instr_cursor = 0;
         self.instr_editing = false;
         self.instr_edit_buf.clear();
+    }
+
+    /// Open the waveform editor for the active instrument.
+    /// Refuses (with a status message) if the instrument has no sample assigned.
+    pub(crate) fn open_waveform_editor(&mut self) {
+        let idx = self.active_instrument;
+        let instr = match self.song.instruments.get(idx) {
+            Some(i) => i,
+            None => {
+                self.set_timed_status("No instrument selected".to_string());
+                return;
+            }
+        };
+
+        if instr.sample.is_none() {
+            self.set_timed_status("No sample assigned to this instrument".to_string());
+            return;
+        }
+
+        let sample = instr.sample.as_ref().unwrap();
+        let load_result = if let Some(bytes) = &sample.bytes {
+            load_wav_from_bytes(bytes)
+        } else {
+            load_wav(&sample.path)
+        };
+
+        match load_result {
+            Ok((buf, _channels)) => {
+                // Downsample to at most 4096 points so the renderer stays fast.
+                const MAX_WAVEFORM_SAMPLES: usize = 4096;
+                let original_frames = buf.len();
+                let samples: Vec<f32> = if buf.len() <= MAX_WAVEFORM_SAMPLES {
+                    buf.as_ref().to_vec()
+                } else {
+                    let step = buf.len() as f64 / MAX_WAVEFORM_SAMPLES as f64;
+                    (0..MAX_WAVEFORM_SAMPLES)
+                        .map(|i| buf[(i as f64 * step) as usize])
+                        .collect()
+                };
+                self.waveform_samples = samples;
+                self.waveform_original_frames = original_frames;
+                self.waveform_active_handle = crate::braille::ActiveHandle::SampleStart;
+                self.push_view(View::WaveformEditor);
+            }
+            Err(e) => {
+                self.set_timed_status(format!("Error loading sample: {e}"));
+            }
+        }
     }
 
     /// Reload sample from disk for the active instrument and send a LoadVoice command.

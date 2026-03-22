@@ -4,7 +4,7 @@ use crate::input;
 use crate::note_utils::{col_to_fx, COL_NOTE};
 use crate::render::{
     render_chain_view, render_instrument_editor, render_mixer_view, render_phrase_grid,
-    render_sample_browser, render_song_view, render_startup_screen,
+    render_sample_browser, render_song_view, render_startup_screen, render_waveform_editor,
 };
 use anyhow::Result;
 use crossterm::{
@@ -133,6 +133,20 @@ pub fn run_tui(
                 View::Mixer => {
                     let table = render_mixer_view(&app);
                     frame.render_widget(table, outer[0]);
+                }
+                View::WaveformEditor => {
+                    let w = outer[0].width.saturating_sub(2) as usize;
+                    let h = outer[0].height.saturating_sub(2) as usize;
+                    let lines = render_waveform_editor(&app, w, h);
+                    let para = ratatui::widgets::Paragraph::new(lines).block(
+                        ratatui::widgets::Block::default()
+                            .title(" Waveform Editor  [Esc: back] ")
+                            .borders(ratatui::widgets::Borders::ALL)
+                            .border_style(
+                                ratatui::style::Style::default().fg(app.theme.screen_title),
+                            ),
+                    );
+                    frame.render_widget(para, outer[0]);
                 }
             }
 
@@ -326,6 +340,12 @@ pub fn run_tui(
                     View::Mixer => {
                         format!(
                             "{mode_label}  |  {transport}  |  h/l: track  j/k: field  +/-: adjust  m: mute  s: solo  Esc: back"
+                        )
+                    }
+                    View::WaveformEditor => {
+                        format!(
+                            "{mode_label}  |  Ins:{:02}  |  Esc: back to instrument editor",
+                            app.active_instrument
                         )
                     }
                 }

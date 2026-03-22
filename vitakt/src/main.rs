@@ -1456,6 +1456,88 @@ mod tests {
         std::fs::remove_file(&txt_path).ok();
         std::fs::remove_dir(&dir).ok();
     }
+
+    fn minimal_wav_bytes(num_frames: usize) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for _ in 0..num_frames {
+                writer.write_sample(0.0f32).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn open_waveform_editor_without_sample_sets_timed_status() {
+        let mut app = make_app();
+        app.open_instrument_editor();
+        // Instrument 0 has no sample assigned by default.
+        app.ensure_instrument(0);
+        app.song.instruments[0].sample = None;
+
+        app.open_waveform_editor();
+
+        assert!(
+            !matches!(app.view, View::WaveformEditor),
+            "view must NOT be WaveformEditor when there is no sample"
+        );
+        assert!(
+            app.status_timer.is_some(),
+            "a timed status message should be set"
+        );
+    }
+
+    #[test]
+    fn open_waveform_editor_with_valid_sample_pushes_view_and_populates_samples() {
+        let mut app = make_app();
+        app.open_instrument_editor();
+        app.ensure_instrument(0);
+
+        let mut sample = vitakt_core::model::Sample::from_path("test.wav");
+        sample.bytes = Some(minimal_wav_bytes(200));
+        app.song.instruments[0].sample = Some(sample);
+
+        app.open_waveform_editor();
+
+        assert!(
+            matches!(app.view, View::WaveformEditor),
+            "view must be WaveformEditor after opening with a valid sample"
+        );
+        assert!(
+            !app.waveform_samples.is_empty(),
+            "waveform_samples must be populated"
+        );
+    }
+
+    #[test]
+    fn esc_in_waveform_editor_pops_back_to_instrument_editor() {
+        let mut app = make_app();
+        app.open_instrument_editor();
+        app.ensure_instrument(0);
+
+        let mut sample = vitakt_core::model::Sample::from_path("test.wav");
+        sample.bytes = Some(minimal_wav_bytes(100));
+        app.song.instruments[0].sample = Some(sample);
+
+        app.open_waveform_editor();
+        assert!(matches!(app.view, View::WaveformEditor));
+
+        // Simulate Esc — pop back.
+        app.pop_view();
+
+        assert!(
+            matches!(app.view, View::InstrumentEditor),
+            "view must be InstrumentEditor after Esc from waveform editor"
+        );
+    }
 }
 
 

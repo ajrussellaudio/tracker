@@ -574,3 +574,57 @@ pub fn render_mixer_view(app: &App) -> Table<'static> {
                 .border_style(Style::default().fg(app.theme.screen_title)),
         )
 }
+
+/// Render the waveform editor screen.
+///
+/// Returns a `Vec` of ratatui `Line`s suitable for wrapping in a `Paragraph`.
+/// The caller passes `width` and `height` (the available content area in terminal
+/// columns/rows, excluding any surrounding block border and the one-line status
+/// footer that appears below the waveform).
+pub fn render_waveform_editor(app: &App, width: usize, height: usize) -> Vec<ratatui::text::Line<'static>> {
+    use crate::braille::{render_waveform, ActiveHandle, WaveformHandles};
+
+    if height == 0 || width == 0 {
+        return Vec::new();
+    }
+
+    let idx = app.active_instrument;
+    let instr = match app.song.instruments.get(idx) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+
+    let raw_frames = app.waveform_original_frames.max(1);
+    let ds_len = app.waveform_samples.len().max(1);
+    let to_ds = |f: u32| (f as usize * ds_len / raw_frames).min(ds_len.saturating_sub(1));
+
+    let handles = WaveformHandles {
+        sample_start: to_ds(instr.sample_start.unwrap_or(0)),
+        sample_end:   to_ds(instr.sample_end.unwrap_or(raw_frames as u32)),
+        loop_start:   to_ds(instr.loop_start.unwrap_or(0)),
+        loop_end:     to_ds(instr.loop_end.unwrap_or(raw_frames as u32)),
+        active: app.waveform_active_handle,
+    };
+
+    let handle_label = match app.waveform_active_handle {
+        ActiveHandle::SampleStart => "SampleStart",
+        ActiveHandle::SampleEnd   => "SampleEnd",
+        ActiveHandle::LoopStart   => "LoopStart",
+        ActiveHandle::LoopEnd     => "LoopEnd",
+    };
+
+    // Reserve the last row for the info line.
+    let waveform_height = height.saturating_sub(1);
+    let mut lines = render_waveform(&app.waveform_samples, width, waveform_height, &handles);
+
+    // Info line
+    let info = format!(
+        " Active: {handle_label}  |  non-destructive — .wav unchanged"
+    );
+    lines.push(ratatui::text::Line::styled(
+        info,
+        ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray),
+    ));
+
+    lines
+}
