@@ -92,6 +92,16 @@ Launch a **general-purpose sub-agent** with this prompt:
 
 ### Comment formats
 
+Post all review comments by writing the body to a temp file and using `--body-file` with stdin closed. This avoids shell quoting issues with newlines and Unicode, and prevents `gh` from hanging on stdin:
+
+```bash
+cat > /tmp/ralph-review.md << 'EOF'
+<comment body here>
+EOF
+gh pr comment <N> --body-file /tmp/ralph-review.md < /dev/null
+rm /tmp/ralph-review.md
+```
+
 **APPROVED:**
 ```
 <!-- RALPH-REVIEW: APPROVED -->
