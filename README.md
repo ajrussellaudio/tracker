@@ -4,6 +4,24 @@ A CLI/TUI sample-based music tracker written in Rust. Arrange samples into phras
 
 ## Installation
 
+### Pre-built binary (macOS Apple Silicon)
+
+Download the latest release, extract the archive, and move the binary onto your `PATH`:
+
+```bash
+curl -L https://github.com/ajrussellaudio/tracker/releases/latest/download/tracker-aarch64-apple-darwin.tar.xz \
+  | tar -xJ
+mv tracker /usr/local/bin/
+```
+
+Then launch with:
+
+```bash
+tracker
+```
+
+### Build from source
+
 **Prerequisites:**
 - Rust stable toolchain (`rustup` recommended)
 - A system audio device (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
@@ -14,11 +32,17 @@ cd tracker
 cargo build --release
 ```
 
-The binary is at `target/release/tracker`.
+The binary is at `target/release/tracker`. Run it with `cargo run --release` during development.
 
 ## Quick Start
 
-Launch with no arguments to see the startup screen:
+Launch with no arguments to see the startup screen. If installed from the pre-built binary:
+
+```bash
+tracker
+```
+
+Or, when running from source:
 
 ```bash
 cargo run --release
@@ -29,6 +53,8 @@ On the startup screen, choose **New Project** to open a blank song, or **Open Fi
 To open a project directly (useful in scripts or shell aliases), pass the path as a positional argument:
 
 ```bash
+tracker path/to/my-song.trk
+# or from source:
 cargo run --release -- path/to/my-song.trk
 ```
 
