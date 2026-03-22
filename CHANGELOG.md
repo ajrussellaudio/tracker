@@ -38,7 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- BPM arrow-key shortcut (←/→) now shown in the status bar hint
+- BPM arrow-key shortcut (←/→) now shown in the status bar hint ([#50](https://github.com/ajrussellaudio/tracker/issues/50))
 
 ### Documentation
 
