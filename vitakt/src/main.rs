@@ -15,6 +15,7 @@ use vitakt_core::{
 
 mod app;
 use app::*;
+mod braille;
 mod app_core;
 mod audio_stream;
 use audio_stream::start_audio_stream;

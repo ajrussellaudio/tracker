@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `vitakt::braille` module: pure `render_waveform(samples, width, height, handles)` function that converts a downsampled amplitude buffer into ratatui `Line`s using Braille Unicode characters (U+2800–U+28FF); the four edit handles (`sample_start`, `sample_end`, `loop_start`, `loop_end`) are overlaid as coloured vertical bars with the active handle highlighted in yellow (#79)
 - `vitakt-core::waveform::decode_and_downsample`: decodes a `.wav` file to a normalised `f32` amplitude buffer, mixes down to mono, and downsamples to a target display width using peak-per-window (#74)
 - `Instrument` gains `sample_start` and `sample_end` fields (`Option<u32>`); audio playback now honours these boundaries, slicing the sample buffer accordingly; loop points are adjusted relative to the new start; song format bumped to v4 with automatic migration from v3 (#75)
 - Global config system: `~/.config/vitakt/config.toml` loaded at startup into `app.config`; supports `bookmarks` (Vec<String>) and `file_browser` (Option<String>); `Config::save()` atomically persists changes; `config.example.toml` ships with the repo (#76)
