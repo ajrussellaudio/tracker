@@ -7,6 +7,8 @@ use crossterm::{
 };
 mod cli;
 use cli::{parse_args, CliAction};
+mod config;
+use config::Config;
 mod history;
 use history::History;
 mod note_utils;
@@ -198,6 +200,8 @@ struct App {
     status_timer: Option<std::time::Instant>,
     /// Loaded color theme.
     theme: Theme,
+    /// Global config loaded from `~/.config/vitakt/config.toml`.
+    config: Config,
 }
 
 impl App {
@@ -254,6 +258,7 @@ impl App {
             preview_playing,
             status_timer: None,
             theme: theme::load(),
+            config: Config::load(),
         }
     }
 
