@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Rename Cargo workspace and crate names from `tracker`/`tracker-core` to `vitakt`/`vitakt-core`; rename source directories accordingly (#62)
+- Rename user-visible strings, config path (`~/.config/vitakt/theme.toml`), usage messages, and internal test fixtures from `tracker` to `vitakt`; add one-time migration that copies `~/.config/tracker/theme.toml` to the new location on first run (#63)
 
 ## [0.1.1] - 2026-03-22
 

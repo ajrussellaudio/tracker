@@ -158,7 +158,7 @@ fn hex_to_color(s: &str, key: &str, truecolor: bool) -> Option<Color> {
         }
         None => {
             eprintln!(
-                "tracker: theme warning: invalid hex color {:?} for key '{}' — using terminal default",
+                "vitakt: theme warning: invalid hex color {:?} for key '{}' — using terminal default",
                 s, key
             );
             None
@@ -168,7 +168,7 @@ fn hex_to_color(s: &str, key: &str, truecolor: bool) -> Option<Color> {
 
 // ── Public loader ─────────────────────────────────────────────────────────────
 
-/// Load the user theme from `~/.config/tracker/theme.toml`.
+/// Load the user theme from `~/.config/vitakt/theme.toml`.
 ///
 /// - If the file does not exist, returns the default theme (all `Color::Reset`).
 /// - If the file exists but is malformed, prints a warning and returns default.
@@ -180,6 +180,18 @@ pub fn load() -> Theme {
         None => return Theme::default(),
     };
 
+    // One-time migration: copy ~/.config/tracker/theme.toml to ~/.config/vitakt/ if needed.
+    if !path.exists() {
+        if let Some(old_path) = legacy_config_path() {
+            if old_path.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&old_path, &path);
+            }
+        }
+    }
+
     if !path.exists() {
         return Theme::default();
     }
@@ -187,7 +199,7 @@ pub fn load() -> Theme {
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("tracker: theme warning: could not read {:?}: {} — using terminal defaults", path, e);
+            eprintln!("vitakt: theme warning: could not read {:?}: {} — using terminal defaults", path, e);
             return Theme::default();
         }
     };
@@ -195,7 +207,7 @@ pub fn load() -> Theme {
     let config: ThemeConfig = match toml::from_str(&raw) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("tracker: theme warning: malformed TOML in {:?}: {} — using terminal defaults", path, e);
+            eprintln!("vitakt: theme warning: malformed TOML in {:?}: {} — using terminal defaults", path, e);
             return Theme::default();
         }
     };
@@ -236,9 +248,14 @@ pub fn load() -> Theme {
     }
 }
 
-fn home_config_path() -> Option<std::path::PathBuf> {
+fn legacy_config_path() -> Option<std::path::PathBuf> {
     let home = env::var("HOME").ok()?;
     Some(std::path::Path::new(&home).join(".config").join("tracker").join("theme.toml"))
+}
+
+fn home_config_path() -> Option<std::path::PathBuf> {
+    let home = env::var("HOME").ok()?;
+    Some(std::path::Path::new(&home).join(".config").join("vitakt").join("theme.toml"))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
