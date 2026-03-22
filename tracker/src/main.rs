@@ -11,9 +11,9 @@ mod theme;
 use theme::Theme;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table},
     Terminal,
 };
 use rtrb::RingBuffer;
@@ -113,6 +113,7 @@ enum InputMode {
     Insert,
     Command,
     Keyboard,
+    ConfirmQuit,
 }
 
 /// An entry in the sample browser: either a subdirectory or a `.wav` file.
@@ -243,6 +244,8 @@ struct App {
     render_progress: Arc<AtomicU32>,
     /// Undo/redo history.
     history: History,
+    /// Whether the song has unsaved changes.
+    is_dirty: bool,
     /// When set, status bar shows app.status until this instant (timed messages).
     status_timer: Option<std::time::Instant>,
     /// Loaded color theme.
@@ -296,6 +299,7 @@ impl App {
             render_receiver: None,
             render_progress: Arc::new(AtomicU32::new(0)),
             history: History::new(),
+            is_dirty: false,
             status_timer: None,
             theme: theme::load(),
         }
@@ -639,7 +643,10 @@ impl App {
         if let Some(path) = raw.strip_prefix("w ") {
             let path = path.trim();
             match storage::save_trk(&self.song, path) {
-                Ok(_) => self.status = format!("Saved: {path}"),
+                Ok(_) => {
+                    self.is_dirty = false;
+                    self.status = format!("Saved: {path}");
+                }
                 Err(e) => self.status = format!("Error: {e}"),
             }
         } else if let Some(path) = raw.strip_prefix("e ") {
@@ -655,6 +662,7 @@ impl App {
                     self.sync_song_to_sequencer();
                     self.sync_mixer_to_audio();
                     self.history.clear();
+                    self.is_dirty = false;
                     self.status = format!("Loaded: {path}");
                 }
                 Err(e) => self.status = format!("Error: {e}"),
@@ -790,6 +798,7 @@ impl App {
     fn record(&mut self, description: &str) {
         let snapshot = self.song.clone();
         self.history.push(description.to_string(), snapshot);
+        self.is_dirty = true;
     }
 
     /// Set a status message that clears after 2 seconds.
@@ -803,6 +812,7 @@ impl App {
         let current = self.song.clone();
         if let Some((snapshot, desc)) = self.history.undo(current) {
             self.song = snapshot;
+            self.is_dirty = true;
             self.set_timed_status(format!("Undid: {desc}"));
             self.sync_phrase_to_sequencer();
             self.sync_song_to_sequencer();
@@ -817,6 +827,7 @@ impl App {
         let current = self.song.clone();
         if let Some((snapshot, desc)) = self.history.redo(current) {
             self.song = snapshot;
+            self.is_dirty = true;
             self.set_timed_status(format!("Redid: {desc}"));
             self.sync_phrase_to_sequencer();
             self.sync_song_to_sequencer();
@@ -1853,6 +1864,20 @@ fn run_tui(
                 }
             }
 
+            // Quit confirmation modal overlay
+            if matches!(app.mode, InputMode::ConfirmQuit) {
+                let modal_width = 46u16;
+                let modal_height = 4u16;
+                let x = size.width.saturating_sub(modal_width) / 2;
+                let y = size.height.saturating_sub(modal_height) / 2;
+                let modal_area = Rect::new(x, y, modal_width.min(size.width), modal_height.min(size.height));
+                frame.render_widget(Clear, modal_area);
+                let modal = Paragraph::new("Unsaved changes. Quit? (y/n)")
+                    .block(Block::default().borders(Borders::ALL).title(" Confirm Quit "))
+                    .style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
+                frame.render_widget(modal, modal_area);
+            }
+
             // Status bar
             let playing = app.seq_playing.load(Ordering::Relaxed);
             let seq_step = app.current_seq_step.load(Ordering::Relaxed);
@@ -1865,12 +1890,14 @@ fn run_tui(
             // Mode label: always the leftmost element in the status bar.
             let mode_label = match app.view {
                 _ if matches!(app.mode, InputMode::Keyboard) => "KEYBOARD",
+                _ if matches!(app.mode, InputMode::ConfirmQuit) => "NORMAL",
                 View::ChainView if app.chain_insert_mode => "INSERT",
                 View::PhraseEditor => match app.mode {
                     InputMode::Normal => "NORMAL",
                     InputMode::Insert => "INSERT",
                     InputMode::Command => "COMMAND",
                     InputMode::Keyboard => "KEYBOARD",
+                    InputMode::ConfirmQuit => "NORMAL",
                 },
                 _ => "NORMAL",
             };
@@ -1882,6 +1909,8 @@ fn run_tui(
             // When a render is in progress, override the status bar with progress.
             let status_text = if app.render_receiver.is_some() {
                 app.status.clone()
+            } else if matches!(app.mode, InputMode::ConfirmQuit) {
+                "Unsaved changes — y: quit  n/Esc: cancel".to_string()
             } else if keyboard_active {
                 format!(
                     "{mode_label}  |  {transport}  |  Ins:{:02}  [/]: change instrument  QWERTY: play note  Esc: normal",
@@ -1924,6 +1953,8 @@ fn run_tui(
                     InputMode::Command => format!("{mode_label}  |  {transport}  |  :{}", app.cmd_buf),
                     // InputMode::Keyboard is handled by the `keyboard_active` branch above
                     InputMode::Keyboard => unreachable!("Keyboard mode status handled before view match"),
+                    // InputMode::ConfirmQuit is handled by the modal branch above
+                    InputMode::ConfirmQuit => unreachable!("ConfirmQuit status handled before view match"),
                 },
                 View::InstrumentEditor => {
                     if app.instr_editing {
@@ -1979,6 +2010,18 @@ fn run_tui(
                         continue;
                     }
                 }
+                // ── Global: ConfirmQuit modal overrides all per-view key handling ─
+                if matches!(app.mode, InputMode::ConfirmQuit) {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => break,
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.mode = InputMode::Normal;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // ── Global: Keyboard mode overrides all per-view key handling ─
                 if matches!(app.mode, InputMode::Keyboard) {
                     match key.code {
@@ -2014,7 +2057,13 @@ fn run_tui(
                     // Startup screen key handling
                     // ──────────────────────────────────────────────────────────
                     View::Startup => match key.code {
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if app.is_dirty {
+                                app.mode = InputMode::ConfirmQuit;
+                            } else {
+                                break;
+                            }
+                        }
                         KeyCode::Char('j') | KeyCode::Down => {
                             app.startup_cursor = (app.startup_cursor + 1) % 2;
                         }
@@ -2040,7 +2089,13 @@ fn run_tui(
                     // Song view key handling
                     // ──────────────────────────────────────────────────────────
                     View::SongView => match key.code {
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if app.is_dirty {
+                                app.mode = InputMode::ConfirmQuit;
+                            } else {
+                                break;
+                            }
+                        }
                         KeyCode::Char(' ') => app.toggle_play(),
                         KeyCode::F(5) => app.restart_play(),
                         KeyCode::Left => app.adjust_bpm(-1.0),
@@ -2360,7 +2415,13 @@ fn run_tui(
                             app.yy_pending = false;
                             match key.code {
                                 KeyCode::Esc => app.pop_view(),
-                                KeyCode::Char('q') => break,
+                                KeyCode::Char('q') => {
+                                    if app.is_dirty {
+                                        app.mode = InputMode::ConfirmQuit;
+                                    } else {
+                                        break;
+                                    }
+                                }
                                 KeyCode::F(1) => {
                                     // Go to Song View (top)
                                     app.view_stack.clear();
@@ -2612,6 +2673,9 @@ fn run_tui(
                         // Keyboard mode is handled globally before this match; this arm
                         // is unreachable but required for exhaustiveness.
                         InputMode::Keyboard => {}
+                        // ConfirmQuit is handled globally before this match; this arm
+                        // is unreachable but required for exhaustiveness.
+                        InputMode::ConfirmQuit => {}
                     },
 
                     // ──────────────────────────────────────────────────────────
@@ -3916,6 +3980,28 @@ mod tests {
         app.exit_keyboard_mode();
         app.enter_keyboard_mode();
         assert_eq!(app.keyboard_instrument, 7);
+    }
+
+    #[test]
+    fn is_dirty_false_on_startup() {
+        let app = make_app();
+        assert!(!app.is_dirty);
+    }
+
+    #[test]
+    fn is_dirty_set_after_record() {
+        let mut app = make_app();
+        assert!(!app.is_dirty);
+        app.record("test mutation");
+        assert!(app.is_dirty);
+    }
+
+    #[test]
+    fn is_dirty_cleared_after_enter_note() {
+        // enter_note calls record(), so dirty should be true afterwards.
+        let mut app = make_app();
+        app.enter_note(60);
+        assert!(app.is_dirty);
     }
 }
 
