@@ -3,7 +3,10 @@ use crate::config::Config;
 use crate::history::History;
 use crate::note_utils::{note_name, pitch_speed};
 use crate::theme;
-use crate::wav_io::{load_all_instrument_samples, load_wav, load_wav_from_bytes, write_wav};
+use crate::wav_io::{
+    load_all_instrument_samples, load_wav, load_wav_from_bytes, load_wav_from_bytes_with_rate,
+    load_wav_with_rate, write_wav,
+};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
@@ -76,6 +79,7 @@ impl App {
             waveform_samples: Vec::new(),
             waveform_original_frames: 0,
             waveform_active_handle: crate::braille::ActiveHandle::SampleStart,
+            waveform_sample_rate: 44100,
         }
     }
 
@@ -187,13 +191,13 @@ impl App {
 
         let sample = instr.sample.as_ref().unwrap();
         let load_result = if let Some(bytes) = &sample.bytes {
-            load_wav_from_bytes(bytes)
+            load_wav_from_bytes_with_rate(bytes)
         } else {
-            load_wav(&sample.path)
+            load_wav_with_rate(&sample.path)
         };
 
         match load_result {
-            Ok((buf, _channels)) => {
+            Ok((buf, _channels, sample_rate)) => {
                 // Downsample to at most 4096 points so the renderer stays fast.
                 const MAX_WAVEFORM_SAMPLES: usize = 4096;
                 let original_frames = buf.len();
@@ -207,6 +211,7 @@ impl App {
                 };
                 self.waveform_samples = samples;
                 self.waveform_original_frames = original_frames;
+                self.waveform_sample_rate = sample_rate;
                 self.waveform_active_handle = crate::braille::ActiveHandle::SampleStart;
                 self.push_view(View::WaveformEditor);
             }
@@ -259,6 +264,101 @@ impl App {
             }
             Err(e) => self.set_timed_status(format!("Preview error: {e}")),
         }
+    }
+
+    /// Cycle the active waveform handle forward (Tab) or backward (Shift+Tab).
+    pub(crate) fn waveform_cycle_handle(&mut self, forward: bool) {
+        use crate::braille::ActiveHandle;
+        self.waveform_active_handle = if forward {
+            match self.waveform_active_handle {
+                ActiveHandle::SampleStart => ActiveHandle::SampleEnd,
+                ActiveHandle::SampleEnd   => ActiveHandle::LoopStart,
+                ActiveHandle::LoopStart   => ActiveHandle::LoopEnd,
+                ActiveHandle::LoopEnd     => ActiveHandle::SampleStart,
+            }
+        } else {
+            match self.waveform_active_handle {
+                ActiveHandle::SampleStart => ActiveHandle::LoopEnd,
+                ActiveHandle::SampleEnd   => ActiveHandle::SampleStart,
+                ActiveHandle::LoopStart   => ActiveHandle::SampleEnd,
+                ActiveHandle::LoopEnd     => ActiveHandle::LoopStart,
+            }
+        };
+    }
+
+    /// Move the active waveform handle by `delta` frames, then re-enforce clamping rules.
+    ///
+    /// Clamping rules (all values in raw sample frames):
+    /// - `SampleStart` ∈ `[0, SampleEnd]`
+    /// - `SampleEnd`   ∈ `[SampleStart, total_frames]`
+    /// - `LoopStart`   ∈ `[SampleStart, LoopEnd]`
+    /// - `LoopEnd`     ∈ `[LoopStart, SampleEnd]`
+    pub(crate) fn waveform_move_handle(&mut self, delta: i64) {
+        use crate::braille::ActiveHandle;
+
+        let idx = self.active_instrument;
+        let total = self.waveform_original_frames as u32;
+
+        let instr = match self.song.instruments.get_mut(idx) {
+            Some(i) => i,
+            None => return,
+        };
+
+        let ss = instr.sample_start.unwrap_or(0);
+        let se = instr.sample_end.unwrap_or(total);
+        let ls = instr.loop_start.unwrap_or(0);
+        let le = instr.loop_end.unwrap_or(total);
+
+        let apply = |val: u32, lo: u32, hi: u32| -> u32 {
+            let new_val = (val as i64).saturating_add(delta);
+            new_val.clamp(lo as i64, hi as i64) as u32
+        };
+
+        match self.waveform_active_handle {
+            ActiveHandle::SampleStart => {
+                let new_ss = apply(ss, 0, se);
+                instr.sample_start = Some(new_ss);
+                // LoopStart must stay within [new_ss, LoopEnd]
+                if ls < new_ss {
+                    instr.loop_start = Some(new_ss);
+                }
+                // LoopEnd must stay within [LoopStart, SampleEnd]
+                let ls2 = instr.loop_start.unwrap_or(new_ss);
+                if le < ls2 {
+                    instr.loop_end = Some(ls2);
+                }
+            }
+            ActiveHandle::SampleEnd => {
+                let new_se = apply(se, ss, total);
+                instr.sample_end = Some(new_se);
+                // LoopEnd must stay within [LoopStart, new_se]
+                if le > new_se {
+                    instr.loop_end = Some(new_se);
+                }
+                // LoopStart must stay within [SampleStart, LoopEnd]
+                let le2 = instr.loop_end.unwrap_or(new_se);
+                if ls > le2 {
+                    instr.loop_start = Some(le2);
+                }
+            }
+            ActiveHandle::LoopStart => {
+                // LoopEnd must stay within [LoopStart, SampleEnd]; ensure se is set
+                let current_se = instr.sample_end.unwrap_or(total);
+                let current_le = instr.loop_end.unwrap_or(current_se);
+                let new_ls = apply(ls, ss, current_le);
+                instr.loop_start = Some(new_ls);
+            }
+            ActiveHandle::LoopEnd => {
+                // LoopStart must stay within [SampleStart, LoopEnd]; ensure ss is set
+                let current_ss = instr.sample_start.unwrap_or(0);
+                let current_ls = instr.loop_start.unwrap_or(current_ss);
+                let current_se = instr.sample_end.unwrap_or(total);
+                let new_le = apply(le, current_ls, current_se);
+                instr.loop_end = Some(new_le);
+            }
+        }
+
+        self.is_dirty = true;
     }
 
     /// Reload sample from disk for the active instrument and send a LoadVoice command.
