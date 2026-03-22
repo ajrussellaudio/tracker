@@ -1538,6 +1538,64 @@ mod tests {
             "view must be InstrumentEditor after Esc from waveform editor"
         );
     }
+
+    #[test]
+    fn waveform_preview_toggle_with_valid_sample_sets_is_previewing() {
+        let mut app = make_app();
+        app.ensure_instrument(0);
+
+        let mut sample = vitakt_core::model::Sample::from_path("test.wav");
+        sample.bytes = Some(minimal_wav_bytes(100));
+        app.song.instruments[0].sample = Some(sample);
+        app.active_instrument = 0;
+
+        assert!(!app.is_previewing);
+        app.waveform_preview_toggle();
+        assert!(app.is_previewing, "toggle-on with a valid sample should set is_previewing = true");
+    }
+
+    #[test]
+    fn waveform_preview_toggle_with_no_sample_is_noop() {
+        let mut app = make_app();
+        app.ensure_instrument(0);
+        app.song.instruments[0].sample = None;
+        app.active_instrument = 0;
+
+        app.waveform_preview_toggle();
+
+        assert!(!app.is_previewing, "toggle with no sample assigned should be a no-op");
+    }
+
+    #[test]
+    fn waveform_preview_toggle_off_clears_is_previewing() {
+        let mut app = make_app();
+        // Simulate an active preview state.
+        app.is_previewing = true;
+        app.preview_playing.store(true, Ordering::Relaxed);
+
+        app.waveform_preview_toggle();
+
+        assert!(!app.is_previewing, "second Space press should clear is_previewing");
+        assert!(
+            !app.preview_playing.load(Ordering::Relaxed),
+            "second Space press should clear preview_playing atomic"
+        );
+    }
+
+    #[test]
+    fn waveform_preview_toggle_with_out_of_bounds_sample_start_does_not_panic() {
+        let mut app = make_app();
+        app.ensure_instrument(0);
+
+        let mut sample = vitakt_core::model::Sample::from_path("test.wav");
+        sample.bytes = Some(minimal_wav_bytes(10)); // only 10 frames
+        app.song.instruments[0].sample = Some(sample);
+        // sample_start beyond the decoded length — must not panic.
+        app.song.instruments[0].sample_start = Some(9999);
+        app.active_instrument = 0;
+
+        app.waveform_preview_toggle(); // should not panic
+    }
 }
 
 

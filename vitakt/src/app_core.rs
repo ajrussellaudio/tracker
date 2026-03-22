@@ -247,9 +247,11 @@ impl App {
         match load_result {
             Ok((samples, channels)) => {
                 let total_frames = samples.len() / channels.max(1);
-                let start = sample_start.unwrap_or(0) as usize * channels;
-                let end = (sample_end.unwrap_or(total_frames as u32) as usize * channels)
-                    .min(samples.len());
+                let start_frame = (sample_start.unwrap_or(0) as usize).min(total_frames);
+                let end_frame = (sample_end.unwrap_or(total_frames as u32) as usize)
+                    .clamp(start_frame, total_frames);
+                let start = start_frame * channels;
+                let end = end_frame * channels;
                 let sliced: Arc<Vec<f32>> = Arc::new(samples[start..end].to_vec());
                 self.send_cmd(Command::PreviewSample { samples: sliced, channels });
                 self.preview_playing.store(true, Ordering::Relaxed);
