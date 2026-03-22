@@ -210,6 +210,10 @@ struct App {
     theme: Theme,
     /// Global config loaded from `~/.config/vitakt/config.toml`.
     config: Config,
+    /// Sample browser: whether the bookmark overlay is open.
+    browser_show_bookmarks: bool,
+    /// Sample browser: cursor index within the bookmark overlay list.
+    browser_bookmark_cursor: usize,
 }
 
 impl App {
@@ -267,6 +271,8 @@ impl App {
             status_timer: None,
             theme: theme::load(),
             config: Config::load(),
+            browser_show_bookmarks: false,
+            browser_bookmark_cursor: 0,
         }
     }
 
@@ -555,6 +561,66 @@ impl App {
             self.browser_cursor = 0;
             self.browser_scroll = 0;
         }
+    }
+
+    /// Handle the `b` key in the sample browser: open the bookmark overlay if valid bookmarks
+    /// exist, otherwise show a hint in the status bar.
+    fn browser_try_open_bookmarks(&mut self) {
+        let has_valid = self
+            .config
+            .bookmarks
+            .iter()
+            .any(|p| std::path::Path::new(p.as_str()).is_dir());
+        if has_valid {
+            self.browser_bookmark_cursor = 0;
+            self.browser_show_bookmarks = true;
+        } else {
+            self.set_timed_status(
+                "No bookmarks set (or none exist on disk)  —  press B to add one".to_string(),
+            );
+        }
+    }
+
+    /// Handle the `B` key in the sample browser: append the current directory to
+    /// `config.bookmarks` (deduplicated) and persist.
+    fn browser_add_bookmark(&mut self) {
+        let dir = self.browser_dir.to_string_lossy().to_string();
+        if !self.config.bookmarks.contains(&dir) {
+            self.config.bookmarks.push(dir.clone());
+            if let Err(e) = self.config.save() {
+                self.set_timed_status(format!("Error saving bookmark: {e}"));
+            } else {
+                self.set_timed_status(format!("Bookmarked: {dir}"));
+            }
+        } else {
+            self.set_timed_status(format!("Already bookmarked: {dir}"));
+        }
+    }
+
+    /// Handle Enter on the bookmark overlay: navigate to the selected bookmark and close the
+    /// overlay.
+    fn browser_overlay_enter(&mut self) {
+        let valid_bookmarks: Vec<String> = self
+            .config
+            .bookmarks
+            .iter()
+            .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+            .cloned()
+            .collect();
+        if let Some(path) = valid_bookmarks.get(self.browser_bookmark_cursor) {
+            let dest = PathBuf::from(path);
+            self.browser_dir = dest.clone();
+            self.browser_entries = list_browser_entries(&dest);
+            self.browser_cursor = 0;
+            self.browser_scroll = 0;
+        }
+        self.browser_show_bookmarks = false;
+        self.browser_bookmark_cursor = 0;
+    }
+
+    /// Handle Esc on the bookmark overlay: close without navigating.
+    fn browser_overlay_esc(&mut self) {
+        self.browser_show_bookmarks = false;
     }
 
     /// Adjust `browser_scroll` so that `browser_cursor` stays within the visible window.
@@ -1729,7 +1795,7 @@ fn render_sample_browser(app: &App, viewport_height: usize) -> Paragraph<'static
     Paragraph::new(lines).block(
         Block::default()
             .title(match app.browser_mode {
-                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  Esc: cancel]",
+                BrowserMode::Sample => "Sample Browser  [Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel]",
                 BrowserMode::Project => "Open Project  [Enter: select  -/Backspace: up  Esc: cancel]",
             })
             .borders(Borders::ALL)
@@ -1977,6 +2043,44 @@ fn run_tui(
                 frame.render_widget(modal, modal_area);
             }
 
+            // Bookmark overlay (shown over the sample browser)
+            if app.browser_show_bookmarks {
+                let valid_bookmarks: Vec<String> = app
+                    .config
+                    .bookmarks
+                    .iter()
+                    .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+                    .cloned()
+                    .collect();
+                let modal_width = (size.width * 2 / 3).max(40).min(size.width);
+                let modal_height = (valid_bookmarks.len() as u16 + 4).min(size.height);
+                let x = size.width.saturating_sub(modal_width) / 2;
+                let y = size.height.saturating_sub(modal_height) / 2;
+                let modal_area = Rect::new(x, y, modal_width, modal_height);
+                frame.render_widget(Clear, modal_area);
+                let mut bm_lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                for (i, path) in valid_bookmarks.iter().enumerate() {
+                    let (prefix, style) = if i == app.browser_bookmark_cursor {
+                        ("▶ ", Style::default().fg(app.theme.cursor_bg).add_modifier(Modifier::BOLD))
+                    } else {
+                        ("  ", Style::default().fg(Color::White))
+                    };
+                    bm_lines.push(ratatui::text::Line::styled(
+                        format!("{prefix}{path}"),
+                        style,
+                    ));
+                }
+                let bm_para = Paragraph::new(bm_lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Bookmarks  [Enter: go  Esc: cancel] ")
+                            .border_style(Style::default().fg(app.theme.screen_title)),
+                    )
+                    .style(Style::default().bg(Color::DarkGray));
+                frame.render_widget(bm_para, modal_area);
+            }
+
             // Status bar
             let playing = app.seq_playing.load(Ordering::Relaxed);
             let seq_step = app.current_seq_step.load(Ordering::Relaxed);
@@ -2070,7 +2174,7 @@ fn run_tui(
                 }
                 View::SampleBrowser => {
                     format!(
-                        "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  Esc: cancel  ({} entries)",
+                        "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here  Esc: cancel  ({} entries)",
                         app.browser_entries.len()
                     )
                 }
@@ -2876,38 +2980,78 @@ fn run_tui(
                     // ──────────────────────────────────────────────────────────
                     // Sample browser key handling
                     // ──────────────────────────────────────────────────────────
-                    View::SampleBrowser => match key.code {
-                        KeyCode::Esc => {
-                            app.pop_view();
-                        }
-                        KeyCode::Char(' ') => app.browser_preview_toggle(),
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if !app.browser_entries.is_empty() {
-                                app.browser_cursor =
-                                    (app.browser_cursor + 1) % app.browser_entries.len();
-                                let available = terminal
-                                    .size()
-                                    .map(|r| (r.height as usize).saturating_sub(5))
-                                    .unwrap_or(0);
-                                app.browser_clamp_scroll(available);
+                    View::SampleBrowser => {
+                        // When bookmark overlay is open, intercept all keys for it.
+                        if app.browser_show_bookmarks {
+                            let valid_len = app
+                                .config
+                                .bookmarks
+                                .iter()
+                                .filter(|p| std::path::Path::new(p.as_str()).is_dir())
+                                .count();
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.browser_overlay_esc();
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if valid_len > 0 {
+                                        app.browser_bookmark_cursor =
+                                            (app.browser_bookmark_cursor + 1) % valid_len;
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if valid_len > 0 {
+                                        app.browser_bookmark_cursor =
+                                            (app.browser_bookmark_cursor + valid_len - 1)
+                                                % valid_len;
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    app.browser_overlay_enter();
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.pop_view();
+                                }
+                                KeyCode::Char(' ') => app.browser_preview_toggle(),
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if !app.browser_entries.is_empty() {
+                                        app.browser_cursor =
+                                            (app.browser_cursor + 1) % app.browser_entries.len();
+                                        let available = terminal
+                                            .size()
+                                            .map(|r| (r.height as usize).saturating_sub(5))
+                                            .unwrap_or(0);
+                                        app.browser_clamp_scroll(available);
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if !app.browser_entries.is_empty() {
+                                        app.browser_cursor =
+                                            (app.browser_cursor + app.browser_entries.len() - 1)
+                                                % app.browser_entries.len();
+                                        let available = terminal
+                                            .size()
+                                            .map(|r| (r.height as usize).saturating_sub(5))
+                                            .unwrap_or(0);
+                                        app.browser_clamp_scroll(available);
+                                    }
+                                }
+                                KeyCode::Enter => app.browser_enter(),
+                                KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
+                                KeyCode::Char('b') => {
+                                    app.browser_try_open_bookmarks();
+                                }
+                                KeyCode::Char('B') => {
+                                    app.browser_add_bookmark();
+                                }
+                                _ => {}
                             }
                         }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if !app.browser_entries.is_empty() {
-                                app.browser_cursor =
-                                    (app.browser_cursor + app.browser_entries.len() - 1)
-                                        % app.browser_entries.len();
-                                let available = terminal
-                                    .size()
-                                    .map(|r| (r.height as usize).saturating_sub(5))
-                                    .unwrap_or(0);
-                                app.browser_clamp_scroll(available);
-                            }
-                        }
-                        KeyCode::Enter => app.browser_enter(),
-                        KeyCode::Backspace | KeyCode::Char('-') => app.browser_go_up(),
-                        _ => {}
-                    },
+                    }
 
                     // ──────────────────────────────────────────────────────────
                     // Mixer view key handling
@@ -4307,5 +4451,114 @@ mod tests {
         std::fs::remove_file(dir.join("test.wav")).ok();
         std::fs::remove_dir(&dir).ok();
     }
+
+    #[test]
+    fn browser_b_key_with_no_bookmarks_shows_status() {
+        let mut app = make_app();
+        app.config.bookmarks.clear();
+        app.browser_try_open_bookmarks();
+        assert!(!app.browser_show_bookmarks, "overlay must stay closed");
+        assert!(
+            app.status.contains("No bookmarks"),
+            "status should hint about missing bookmarks, got: {}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn browser_b_key_with_valid_bookmarks_opens_overlay() {
+        let dir = std::env::temp_dir().join("vitakt_bookmark_open_test");
+        std::fs::create_dir_all(&dir).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dir.to_string_lossy().to_string()];
+        app.browser_bookmark_cursor = 5; // pre-set to non-zero
+        app.browser_try_open_bookmarks();
+
+        assert!(app.browser_show_bookmarks, "overlay must open with valid bookmark");
+        assert_eq!(app.browser_bookmark_cursor, 0, "cursor must reset to 0");
+
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn browser_capital_b_adds_and_deduplicates_bookmark() {
+        let dir = std::env::temp_dir().join("vitakt_add_bookmark_test");
+        std::fs::create_dir_all(&dir).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks.clear();
+        app.browser_dir = dir.clone();
+
+        // First press — should add the bookmark.
+        app.browser_add_bookmark();
+        assert_eq!(app.config.bookmarks.len(), 1, "bookmark should be added");
+        assert_eq!(app.config.bookmarks[0], dir.to_string_lossy().as_ref());
+        assert!(
+            app.status.starts_with("Bookmarked:") || app.status.starts_with("Error"),
+            "status should confirm bookmark, got: {}",
+            app.status
+        );
+
+        // Second press — should deduplicate.
+        app.browser_add_bookmark();
+        assert_eq!(app.config.bookmarks.len(), 1, "duplicate must not be added");
+        assert!(
+            app.status.contains("Already bookmarked"),
+            "status should say already bookmarked, got: {}",
+            app.status
+        );
+
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn browser_overlay_enter_navigates_to_bookmark_dir() {
+        let dest = std::env::temp_dir().join("vitakt_overlay_enter_test");
+        std::fs::create_dir_all(&dest).ok();
+        std::fs::write(dest.join("snare.wav"), b"RIFF").ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dest.to_string_lossy().to_string()];
+        app.browser_show_bookmarks = true;
+        app.browser_bookmark_cursor = 0;
+        let original_dir = app.browser_dir.clone();
+
+        app.browser_overlay_enter();
+
+        assert_eq!(app.browser_dir, dest, "browser_dir must update to selected bookmark");
+        assert_ne!(app.browser_dir, original_dir);
+        assert_eq!(app.browser_cursor, 0, "cursor must reset to 0");
+        assert_eq!(app.browser_scroll, 0, "scroll must reset to 0");
+        assert!(!app.browser_show_bookmarks, "overlay must close after Enter");
+        assert_eq!(app.browser_bookmark_cursor, 0, "bookmark cursor must reset");
+        let has_wav = app
+            .browser_entries
+            .iter()
+            .any(|e| matches!(e, BrowserEntry::Wav(n) if n == "snare.wav"));
+        assert!(has_wav, "browser entries should reflect the new directory");
+
+        std::fs::remove_file(dest.join("snare.wav")).ok();
+        std::fs::remove_dir(&dest).ok();
+    }
+
+    #[test]
+    fn browser_overlay_esc_closes_without_navigating() {
+        let dest = std::env::temp_dir().join("vitakt_overlay_esc_test");
+        std::fs::create_dir_all(&dest).ok();
+
+        let mut app = make_app();
+        app.config.bookmarks = vec![dest.to_string_lossy().to_string()];
+        app.browser_show_bookmarks = true;
+        let original_dir = app.browser_dir.clone();
+
+        app.browser_overlay_esc();
+
+        assert!(!app.browser_show_bookmarks, "overlay must close on Esc");
+        assert_eq!(app.browser_dir, original_dir, "browser_dir must not change on Esc");
+
+        std::fs::remove_dir(&dest).ok();
+    }
 }
+
 
