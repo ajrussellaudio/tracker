@@ -271,7 +271,74 @@ Lists `.wav` files and subdirectories in the current browsing directory.
 | `k` / `↑` | Move cursor up (wraps) |
 | `Enter` | Navigate into directory, or load selected file into active instrument |
 | `-` / `Backspace` | Navigate to parent directory |
+| `Space` | Preview selected `.wav` file |
+| `b` | Open bookmarks overlay |
+| `B` | Save current directory as a bookmark |
+| `e` | Launch external file picker (requires `file_browser` in config) |
 | `Esc` | Cancel and return to previous view |
+
+---
+
+### External File Browser
+
+You can configure any terminal file picker (e.g. **yazi**, **ranger**, **mc**) to be
+launched from the sample browser with `e`.
+
+**Setup** — add to `~/.config/vitakt/config.toml`:
+
+```toml
+file_browser = "yazi --chooser-file \"$VITAKT_CHOOSER_FILE\""
+```
+
+The `VITAKT_CHOOSER_FILE` environment variable is set by vitakt before the picker
+is launched. Configure your picker to write the chosen file path to that file.
+vitakt reads it on exit; if the path ends in `.wav` it is loaded into the active
+instrument automatically.
+
+#### yazi
+
+Add a `choose` keymap to `~/.config/yazi/keymap.toml`:
+
+```toml
+[[manager.prepend_keymap]]
+on   = ["<Enter>"]
+run  = "shell 'echo \"$1\" > \"$VITAKT_CHOOSER_FILE\"' --args=hovered"
+desc = "Send file to vitakt"
+```
+
+Then set in `~/.config/vitakt/config.toml`:
+
+```toml
+file_browser = "yazi"
+```
+
+#### ranger
+
+Pass `--choosefile` with the env var so ranger writes its selection automatically:
+
+```toml
+file_browser = "ranger --choosefile \"$VITAKT_CHOOSER_FILE\""
+```
+
+No extra ranger configuration is needed.
+
+#### mc (Midnight Commander)
+
+Add a user menu entry in `~/.config/mc/menu` that writes the selection:
+
+```
++ t r
+  Write selection to vitakt
+  echo %f > "$VITAKT_CHOOSER_FILE"
+```
+
+Then set in `~/.config/vitakt/config.toml`:
+
+```toml
+file_browser = "mc"
+```
+
+Press `F2` in mc and choose the menu entry before exiting to pass the selection back.
 
 ---
 

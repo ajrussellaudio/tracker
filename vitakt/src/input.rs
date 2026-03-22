@@ -836,6 +836,9 @@ fn handle_sample_browser(app: &mut App, key: KeyEvent, terminal_height: u16) -> 
             KeyCode::Char('B') => {
                 app.browser_add_bookmark();
             }
+            KeyCode::Char('e') => {
+                app.browser_launch_external();
+            }
             _ => {}
         }
     }

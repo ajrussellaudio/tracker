@@ -181,6 +181,54 @@ impl App {
         }
     }
 
+    /// Handle the `e` key in the sample browser: suspend the TUI, launch the configured
+    /// external file picker, and load the selected `.wav` into the current instrument.
+    ///
+    /// Does nothing if `config.file_browser` is `None`.
+    pub(crate) fn browser_launch_external(&mut self) {
+        let Some(cmd) = self.config.file_browser.clone() else {
+            return;
+        };
+
+        let tmp_path = std::env::temp_dir()
+            .join(format!("vitakt-chooser-{}.txt", std::process::id()));
+
+        // Suspend TUI
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
+
+        // Launch external file picker via shell so that env-var substitution in the
+        // command string (e.g. --chooser-file "$VITAKT_CHOOSER_FILE") is expanded.
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .env("VITAKT_CHOOSER_FILE", &tmp_path)
+            .status();
+
+        // Resume TUI (terminal.clear() is triggered via needs_terminal_clear in tui.rs)
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen);
+        self.needs_terminal_clear = true;
+
+        // Read and validate the selection
+        let selected = std::fs::read_to_string(&tmp_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let _ = std::fs::remove_file(&tmp_path);
+
+        if selected.to_lowercase().ends_with(".wav") && std::path::Path::new(&selected).exists() {
+            self.record("select sample");
+            self.ensure_instrument(self.active_instrument);
+            if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
+                instr.sample = Some(vitakt_core::model::Sample::from_path(selected.clone()));
+            }
+            self.pop_view();
+            self.reload_instrument_sample();
+        }
+    }
+
     /// Handle Enter on the bookmark overlay.
     pub(crate) fn browser_overlay_enter(&mut self) {
         let valid_bookmarks: Vec<String> = self
