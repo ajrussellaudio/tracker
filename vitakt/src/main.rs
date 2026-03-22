@@ -1598,4 +1598,200 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod browser_search_tests {
+    use super::*;
+
+    fn make_app() -> App {
+        App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    /// Build a browser with entries: ParentDir, then WAVs matching names from `names`.
+    fn make_browser_entries(names: &[&str]) -> Vec<BrowserEntry> {
+        let mut entries = vec![BrowserEntry::ParentDir];
+        for n in names {
+            entries.push(BrowserEntry::Wav(n.to_string()));
+        }
+        entries
+    }
+
+    // ── browser_search_update ────────────────────────────────────────────────
+
+    #[test]
+    fn search_update_finds_matching_entries_and_jumps_cursor() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["kick.wav", "snare.wav", "kick_hard.wav"]);
+        app.browser_search_query = "kick".to_string();
+        app.browser_search_update(20);
+        // ParentDir is at index 0 (excluded), kick at 1, snare at 2, kick_hard at 3
+        assert_eq!(app.browser_search_matches, vec![1, 3]);
+        assert_eq!(app.browser_cursor, 1, "cursor should jump to first match");
+    }
+
+    #[test]
+    fn search_update_excludes_parent_dir() {
+        let mut app = make_app();
+        // ParentDir display name contains ".." — make sure it is never included.
+        app.browser_entries = make_browser_entries(&["file.wav"]);
+        app.browser_search_query = ".".to_string(); // would match ".." if ParentDir were included
+        app.browser_search_update(20);
+        // Only index 1 (file.wav doesn't contain ".") — but ".." would match ".".
+        // If ParentDir were included, index 0 would appear.
+        assert!(
+            !app.browser_search_matches.contains(&0),
+            "ParentDir (index 0) must never appear in matches"
+        );
+    }
+
+    #[test]
+    fn search_update_empty_query_clears_matches() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["kick.wav"]);
+        // Populate some stale matches first.
+        app.browser_search_matches = vec![1];
+        app.browser_search_query = String::new();
+        app.browser_search_update(20);
+        // Empty query matches everything that isn't ParentDir.
+        // The important contract is that it doesn't panic and idx is reset to 0.
+        assert_eq!(app.browser_search_idx, 0);
+    }
+
+    #[test]
+    fn search_update_no_matches_leaves_cursor_unchanged() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["kick.wav"]);
+        app.browser_cursor = 1;
+        app.browser_search_query = "zzz".to_string();
+        app.browser_search_update(20);
+        assert!(app.browser_search_matches.is_empty());
+        assert_eq!(app.browser_cursor, 1, "cursor should not move when there are no matches");
+    }
+
+    // ── browser_search_next ──────────────────────────────────────────────────
+
+    #[test]
+    fn search_next_advances_to_next_match() {
+        let mut app = make_app();
+        // entries: ParentDir(0), a(1), b(2), c(3)
+        app.browser_entries = make_browser_entries(&["a.wav", "b.wav", "c.wav"]);
+        app.browser_search_matches = vec![1, 2, 3];
+        app.browser_cursor = 1; // on first match
+        app.browser_search_next(20);
+        assert_eq!(app.browser_cursor, 2);
+    }
+
+    #[test]
+    fn search_next_wraps_from_last_to_first() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["a.wav", "b.wav", "c.wav"]);
+        app.browser_search_matches = vec![1, 2, 3];
+        app.browser_cursor = 3; // on last match
+        app.browser_search_next(20);
+        assert_eq!(app.browser_cursor, 1, "next from last match should wrap to first");
+    }
+
+    #[test]
+    fn search_next_noop_when_no_matches() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["a.wav"]);
+        app.browser_search_matches = vec![];
+        app.browser_cursor = 1;
+        app.browser_search_next(20);
+        assert_eq!(app.browser_cursor, 1, "cursor must not move when matches is empty");
+    }
+
+    #[test]
+    fn search_next_re_anchors_after_manual_j_k_navigation() {
+        // Reproduce the scenario from the review: 5 matches, confirm on match[0],
+        // navigate via j/k to match[3], press n → should jump to match[4].
+        let mut app = make_app();
+        // entries: ParentDir(0), m0(1), gap(2), m1(3), gap(4), m2(5), gap(6), m3(7), gap(8), m4(9)
+        app.browser_entries = make_browser_entries(&[
+            "m0.wav", "gap.wav", "m1.wav", "gap2.wav", "m2.wav",
+            "gap3.wav", "m3.wav", "gap4.wav", "m4.wav",
+        ]);
+        app.browser_search_matches = vec![1, 3, 5, 7, 9];
+        // Simulate: searched, landed on match[0]=1, then user pressed j to land on match[3]=7.
+        app.browser_cursor = 7;
+        app.browser_search_idx = 0; // stale — left over from when search was confirmed
+        app.browser_search_next(20);
+        assert_eq!(
+            app.browser_cursor, 9,
+            "n from cursor=match[3] should advance to match[4], not match[1]"
+        );
+    }
+
+    // ── browser_search_prev ──────────────────────────────────────────────────
+
+    #[test]
+    fn search_prev_retreats_to_previous_match() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["a.wav", "b.wav", "c.wav"]);
+        app.browser_search_matches = vec![1, 2, 3];
+        app.browser_cursor = 3; // on last match
+        app.browser_search_prev(20);
+        assert_eq!(app.browser_cursor, 2);
+    }
+
+    #[test]
+    fn search_prev_wraps_from_first_to_last() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["a.wav", "b.wav", "c.wav"]);
+        app.browser_search_matches = vec![1, 2, 3];
+        app.browser_cursor = 1; // on first match
+        app.browser_search_prev(20);
+        assert_eq!(app.browser_cursor, 3, "prev from first match should wrap to last");
+    }
+
+    #[test]
+    fn search_prev_noop_when_no_matches() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&["a.wav"]);
+        app.browser_search_matches = vec![];
+        app.browser_cursor = 1;
+        app.browser_search_prev(20);
+        assert_eq!(app.browser_cursor, 1, "cursor must not move when matches is empty");
+    }
+
+    #[test]
+    fn search_prev_re_anchors_after_manual_navigation() {
+        let mut app = make_app();
+        app.browser_entries = make_browser_entries(&[
+            "m0.wav", "gap.wav", "m1.wav", "gap2.wav", "m2.wav",
+            "gap3.wav", "m3.wav", "gap4.wav", "m4.wav",
+        ]);
+        app.browser_search_matches = vec![1, 3, 5, 7, 9];
+        // cursor is at match[3]=7 but idx is stale at 0
+        app.browser_cursor = 7;
+        app.browser_search_idx = 0;
+        app.browser_search_prev(20);
+        assert_eq!(
+            app.browser_cursor, 5,
+            "N from cursor=match[3] should retreat to match[2], not wrap to match[4]"
+        );
+    }
+
+    // ── browser_search_clear ─────────────────────────────────────────────────
+
+    #[test]
+    fn search_clear_resets_all_search_state() {
+        let mut app = make_app();
+        app.browser_searching = true;
+        app.browser_search_query = "kick".to_string();
+        app.browser_search_matches = vec![1, 3];
+        app.browser_search_idx = 1;
+        app.browser_search_clear();
+        assert!(!app.browser_searching);
+        assert!(app.browser_search_query.is_empty());
+        assert!(app.browser_search_matches.is_empty());
+        assert_eq!(app.browser_search_idx, 0);
+    }
+}
+
 

@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `..` parent directory entry appears at the top of every non-root directory in the sample browser; pressing Enter on it navigates up just like Backspace (#73)
 - Waveform editor screen (`View::WaveformEditor`): `w` in the instrument editor opens a full-width Braille waveform display for the active instrument's sample; if no sample is assigned a timed status bar error is shown and the screen does not open; all four handle bars (`sample_start`, `sample_end`, `loop_start`, `loop_end`) are rendered at their correct positions; `Esc` returns to the instrument editor and stops any active preview playback (#81)
 - Waveform editor handle editing: Tab/Shift+Tab cycles through the four handles (`SampleStart → SampleEnd → LoopStart → LoopEnd`); Left/Right arrow moves the active handle by 256 samples, Shift+arrow by 1024, Ctrl+Shift+arrow by 1; all moves silently clamp to valid ranges (`SampleStart ≤ SampleEnd`, `LoopStart/LoopEnd ∈ [SampleStart, SampleEnd]`); the status line now shows raw sample position and `mm:ss.ms` timestamp alongside total sample length (#83)
+- Sample browser `/` search: press `/` to enter a search prompt; typing filters entries live (case-insensitive, `..` excluded); Enter confirms and jumps the cursor to the first match; `n`/`N` cycle forward/backward through all matches with wrap-around; `Esc` clears the search and returns to normal navigation; matched entries are highlighted and the search bar shows match count (#77)
 
 ### Changed
 

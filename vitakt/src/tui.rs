@@ -332,10 +332,17 @@ pub fn run_tui(
                         } else {
                             ""
                         };
-                        format!(
-                            "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  b: bookmarks  B: bookmark here{external_hint}  Esc: cancel  ({} entries)",
-                            app.browser_entries.len()
-                        )
+                        if app.browser_searching {
+                            format!(
+                                "{mode_label}  |  Type to search  Enter: confirm  Esc: clear  ({} entries)",
+                                app.browser_entries.len()
+                            )
+                        } else {
+                            format!(
+                                "{mode_label}  |  j/k: nav  Enter: select  -/Backspace: up  /: search  n/N: next/prev match  b: bookmarks  B: bookmark here{external_hint}  Esc: cancel  ({} entries)",
+                                app.browser_entries.len()
+                            )
+                        }
                     }
                     View::Mixer => {
                         format!(

@@ -85,6 +85,7 @@ impl App {
                     self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
                     self.browser_cursor = 0;
                     self.browser_scroll = 0;
+                    self.browser_search_clear();
                 }
                 BrowserEntry::Wav(name) => match self.browser_mode {
                     BrowserMode::Sample => {
@@ -146,6 +147,7 @@ impl App {
             self.browser_entries = list_browser_entries_ext(&self.browser_dir, ext);
             self.browser_cursor = 0;
             self.browser_scroll = 0;
+            self.browser_search_clear();
         }
     }
 
@@ -250,6 +252,7 @@ impl App {
             self.browser_entries = list_browser_entries(&dest);
             self.browser_cursor = 0;
             self.browser_scroll = 0;
+            self.browser_search_clear();
         }
         self.browser_show_bookmarks = false;
         self.browser_bookmark_cursor = 0;
@@ -270,6 +273,73 @@ impl App {
         } else if self.browser_cursor >= self.browser_scroll + available {
             self.browser_scroll = self.browser_cursor - available + 1;
         }
+    }
+
+    /// Recompute `browser_search_matches` from `browser_search_query`, then jump the
+    /// cursor to the first match (if any).
+    pub(crate) fn browser_search_update(&mut self, available: usize) {
+        let query = self.browser_search_query.to_lowercase();
+        self.browser_search_matches = self
+            .browser_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                !matches!(e, BrowserEntry::ParentDir)
+                    && e.display_name().to_lowercase().contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        self.browser_search_idx = 0;
+        if let Some(&first) = self.browser_search_matches.first() {
+            self.browser_cursor = first;
+            self.browser_clamp_scroll(available);
+        }
+    }
+
+    /// Advance to the next search match, wrapping at the end.
+    ///
+    /// Re-syncs the internal index to the current cursor position before
+    /// advancing, so manual `j`/`k` navigation after confirming a search does
+    /// not cause `n` to jump back to a stale match.
+    pub(crate) fn browser_search_next(&mut self, available: usize) {
+        if self.browser_search_matches.is_empty() {
+            return;
+        }
+        let current = self
+            .browser_search_matches
+            .iter()
+            .rposition(|&m| m <= self.browser_cursor)
+            .unwrap_or(self.browser_search_matches.len() - 1);
+        self.browser_search_idx = (current + 1) % self.browser_search_matches.len();
+        self.browser_cursor = self.browser_search_matches[self.browser_search_idx];
+        self.browser_clamp_scroll(available);
+    }
+
+    /// Retreat to the previous search match, wrapping at the start.
+    ///
+    /// Re-syncs the internal index to the current cursor position before
+    /// retreating, symmetric with `browser_search_next`.
+    pub(crate) fn browser_search_prev(&mut self, available: usize) {
+        if self.browser_search_matches.is_empty() {
+            return;
+        }
+        let len = self.browser_search_matches.len();
+        let current = self
+            .browser_search_matches
+            .iter()
+            .position(|&m| m >= self.browser_cursor)
+            .unwrap_or(0);
+        self.browser_search_idx = (current + len - 1) % len;
+        self.browser_cursor = self.browser_search_matches[self.browser_search_idx];
+        self.browser_clamp_scroll(available);
+    }
+
+    /// Clear the active search state.
+    pub(crate) fn browser_search_clear(&mut self) {
+        self.browser_searching = false;
+        self.browser_search_query.clear();
+        self.browser_search_matches.clear();
+        self.browser_search_idx = 0;
     }
 
     /// Handle Space in the sample browser: toggle preview playback of the highlighted .wav.
