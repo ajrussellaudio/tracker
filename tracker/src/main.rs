@@ -246,6 +246,8 @@ struct App {
     history: History,
     /// Whether the song has unsaved changes.
     is_dirty: bool,
+    /// Whether the sample browser is currently playing an audio preview.
+    is_previewing: bool,
     /// When set, status bar shows app.status until this instant (timed messages).
     status_timer: Option<std::time::Instant>,
     /// Loaded color theme.
@@ -300,6 +302,7 @@ impl App {
             render_progress: Arc::new(AtomicU32::new(0)),
             history: History::new(),
             is_dirty: false,
+            is_previewing: false,
             status_timer: None,
             theme: theme::load(),
         }
@@ -577,6 +580,35 @@ impl App {
         }
     }
 
+    /// Handle Space in the sample browser: toggle preview playback of the highlighted .wav.
+    /// Silently ignores Space on a directory entry or an empty list.
+    fn browser_preview_toggle(&mut self) {
+        if self.is_previewing {
+            self.send_cmd(Command::StopPreview);
+            self.is_previewing = false;
+            return;
+        }
+        let Some(entry) = self.browser_entries.get(self.browser_cursor).cloned() else {
+            return;
+        };
+        let BrowserEntry::Wav(name) = entry else {
+            return; // directory — ignore
+        };
+        let full_path = self.browser_dir.join(&name);
+        let path_str = full_path
+            .canonicalize()
+            .unwrap_or(full_path)
+            .to_string_lossy()
+            .to_string();
+        match load_wav(&path_str) {
+            Ok((samples, channels)) => {
+                self.send_cmd(Command::PreviewSample { samples, channels });
+                self.is_previewing = true;
+            }
+            Err(e) => self.set_timed_status(format!("Preview error: {e}")),
+        }
+    }
+
     /// Adjust BPM by `delta` and send the new value to the audio thread.
     fn adjust_bpm(&mut self, delta: f32) {
         self.record("set BPM");
@@ -594,6 +626,11 @@ impl App {
     fn pop_view(&mut self) {
         if let Some(prev) = self.view_stack.pop() {
             self.view = prev;
+        }
+        // Stop any active preview when leaving the sample browser.
+        if self.is_previewing {
+            self.send_cmd(Command::StopPreview);
+            self.is_previewing = false;
         }
         // Clear mode when returning to PhraseEditor
         if matches!(self.view, View::PhraseEditor) {
@@ -2803,6 +2840,7 @@ fn run_tui(
                         KeyCode::Esc => {
                             app.pop_view();
                         }
+                        KeyCode::Char(' ') => app.browser_preview_toggle(),
                         KeyCode::Char('j') | KeyCode::Down => {
                             if !app.browser_entries.is_empty() {
                                 app.browser_cursor =
