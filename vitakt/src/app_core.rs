@@ -733,3 +733,192 @@ mod sample_bounds_tests {
         assert_eq!(out.len(), 60);
     }
 }
+
+#[cfg(test)]
+mod waveform_cycle_handle_tests {
+    use super::*;
+    use crate::braille::ActiveHandle;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU8},
+        Arc,
+    };
+
+    fn make_app() -> App {
+        App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    #[test]
+    fn forward_cycles_through_all_handles_and_wraps() {
+        let mut app = make_app();
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleEnd);
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopStart);
+
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopEnd);
+
+        // Wraparound back to SampleStart
+        app.waveform_cycle_handle(true);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleStart);
+    }
+
+    #[test]
+    fn backward_cycles_through_all_handles_and_wraps() {
+        let mut app = make_app();
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Wraparound to LoopEnd
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopEnd);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::LoopStart);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleEnd);
+
+        app.waveform_cycle_handle(false);
+        assert_eq!(app.waveform_active_handle, ActiveHandle::SampleStart);
+    }
+}
+
+#[cfg(test)]
+mod waveform_handle_tests {
+    use super::*;
+    use crate::braille::ActiveHandle;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU8},
+        Arc,
+    };
+
+    fn make_app_with_instrument(total_frames: u32) -> App {
+        let mut app = App::new(
+            None,
+            60,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        app.ensure_instrument(0);
+        app.active_instrument = 0;
+        app.waveform_original_frames = total_frames as usize;
+        app
+    }
+
+    #[test]
+    fn sample_start_pushed_past_loop_start_cascades_loop_start() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(30);
+        instr.loop_end = Some(70);
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Move SampleStart forward past LoopStart (30)
+        app.waveform_move_handle(50);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(instr.sample_start, Some(50), "SampleStart should be at 50");
+        assert_eq!(
+            instr.loop_start,
+            Some(50),
+            "LoopStart should be clamped to new SampleStart"
+        );
+    }
+
+    #[test]
+    fn sample_end_pulled_below_loop_end_cascades_loop_end() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(20);
+        instr.loop_end = Some(80);
+        app.waveform_active_handle = ActiveHandle::SampleEnd;
+
+        // Move SampleEnd backward below LoopEnd (80)
+        app.waveform_move_handle(-40);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(instr.sample_end, Some(60), "SampleEnd should be at 60");
+        assert_eq!(
+            instr.loop_end,
+            Some(60),
+            "LoopEnd should be clamped to new SampleEnd"
+        );
+    }
+
+    #[test]
+    fn loop_start_none_with_sample_start_nonzero_snaps_to_sample_start() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(30);
+        instr.sample_end = Some(100);
+        instr.loop_start = None; // defaults to 0 < sample_start
+        instr.loop_end = Some(80);
+        app.waveform_active_handle = ActiveHandle::LoopStart;
+
+        // A negative delta that would push the effective ls=0 below SampleStart=30
+        app.waveform_move_handle(-10);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.loop_start,
+            Some(30),
+            "LoopStart should snap to SampleStart when loop_start is None and sample_start > 0"
+        );
+    }
+
+    #[test]
+    fn loop_end_none_clamped_to_sample_end() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(0);
+        instr.sample_end = Some(80);
+        instr.loop_start = Some(10);
+        instr.loop_end = None; // defaults to total=100, which is > sample_end=80
+        app.waveform_active_handle = ActiveHandle::LoopEnd;
+
+        // A positive delta that tries to push le=100 further up
+        app.waveform_move_handle(10);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.loop_end,
+            Some(80),
+            "LoopEnd should be clamped to SampleEnd when loop_end is None"
+        );
+    }
+
+    #[test]
+    fn delta_that_would_take_handle_negative_saturates_at_zero() {
+        let mut app = make_app_with_instrument(100);
+        let instr = &mut app.song.instruments[0];
+        instr.sample_start = Some(5);
+        instr.sample_end = Some(100);
+        instr.loop_start = Some(0);
+        instr.loop_end = Some(100);
+        app.waveform_active_handle = ActiveHandle::SampleStart;
+
+        // Large negative delta — should saturate at 0, not underflow
+        app.waveform_move_handle(-1000);
+
+        let instr = &app.song.instruments[0];
+        assert_eq!(
+            instr.sample_start,
+            Some(0),
+            "SampleStart should saturate at 0, not underflow"
+        );
+    }
+}
