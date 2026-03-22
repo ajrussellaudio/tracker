@@ -40,7 +40,9 @@ Choose a mode based on this table:
 ### If there are no open ralph PRs
 
 - List all open issues excluding any labelled `prd` or `blocked`.
-- Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one.
+- Choose the **single most important** open issue that is not blocked by incomplete work. Do not ask. Do not pick more than one. Prioritise in this order:
+  1. Issues labelled `high priority` (pick the lowest-numbered one)
+  2. All other issues (pick the lowest-numbered one)
 - Proceed to **[Implement Mode](#implement-mode)**.
 - If no open issues remain, proceed to **[Step 7](#step-7--decide-what-comes-next)**.
 
