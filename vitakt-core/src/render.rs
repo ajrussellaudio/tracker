@@ -287,6 +287,7 @@ mod tests {
             interp_mode: crate::model::InterpMode::Linear,
             volume: 1.0,
             pan: 0.0,
+            ..Default::default()
         });
 
         // Place a note at step 0 of phrase 0 (already in the default arrangement).

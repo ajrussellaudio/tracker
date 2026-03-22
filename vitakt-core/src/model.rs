@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 4;
 pub const STEPS_PER_PHRASE: usize = 16;
 pub const FX_SLOTS_PER_STEP: usize = 4;
 /// Number of simultaneous tracks in the sequencer.
@@ -59,6 +59,10 @@ pub struct Instrument {
     pub root_note: u8,
     pub loop_start: Option<u32>,
     pub loop_end: Option<u32>,
+    #[serde(default)]
+    pub sample_start: Option<u32>,
+    #[serde(default)]
+    pub sample_end: Option<u32>,
     pub interp_mode: InterpMode,
     pub volume: f32,
     pub pan: f32,
@@ -72,6 +76,8 @@ impl Default for Instrument {
             root_note: 60,
             loop_start: None,
             loop_end: None,
+            sample_start: None,
+            sample_end: None,
             interp_mode: InterpMode::None,
             volume: 1.0,
             pan: 0.0,
@@ -277,6 +283,8 @@ impl Default for Song {
 ///            layout-compatible (will return a deserialization error on load).
 ///   v2 → v3: `Song::mixer` field added (per-track vol/pan/mute/solo/FX send).
 ///            Missing field defaults to all-unity (volume=1, pan=0, rest false/zero).
+///   v3 → v4: `Instrument::sample_start` and `sample_end` fields added.
+///            Missing fields default to `None` (full file range, unchanged behaviour).
 pub fn migrate(mut song: Song) -> Song {
     song.version = CURRENT_VERSION;
     song
@@ -308,5 +316,55 @@ mod tests {
             assert!(!track.mute);
             assert!(!track.solo);
         }
+    }
+
+    #[test]
+    fn v3_instrument_deserializes_without_sample_start_end() {
+        // Simulates loading a v3 JSON file that pre-dates sample_start/sample_end.
+        let json = r#"{
+            "version": 3,
+            "name": "",
+            "bpm": 120.0,
+            "instruments": [{
+                "name": "kick",
+                "sample": null,
+                "root_note": 60,
+                "loop_start": null,
+                "loop_end": null,
+                "interp_mode": "None",
+                "volume": 1.0,
+                "pan": 0.0
+            }],
+            "samples": [],
+            "phrases": [{"steps": []}],
+            "chains": [{"slots": [{"phrase": 0, "transpose": 0}]}],
+            "arrangement": [[0, null, null, null, null, null, null, null]]
+        }"#;
+        let song: Song = serde_json::from_str(json)
+            .expect("v3 JSON should deserialise without sample_start/sample_end");
+        let instr = &song.instruments[0];
+        assert!(instr.sample_start.is_none(), "sample_start should default to None");
+        assert!(instr.sample_end.is_none(), "sample_end should default to None");
+    }
+
+    #[test]
+    fn instrument_sample_start_end_round_trips() {
+        let mut song = Song::default();
+        let mut instr = Instrument::default();
+        instr.sample_start = Some(100);
+        instr.sample_end = Some(8000);
+        song.instruments.push(instr);
+        let json = serde_json::to_string(&song).unwrap();
+        let loaded: Song = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.instruments[0].sample_start, Some(100));
+        assert_eq!(loaded.instruments[0].sample_end, Some(8000));
+    }
+
+    #[test]
+    fn migrate_sets_version_to_current() {
+        let mut old_song = Song::default();
+        old_song.version = 3;
+        let migrated = migrate(old_song);
+        assert_eq!(migrated.version, CURRENT_VERSION);
     }
 }

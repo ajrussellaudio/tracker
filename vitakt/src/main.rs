@@ -355,6 +355,8 @@ impl App {
                 let embedded_bytes = sample.bytes.clone();
                 let loop_start = instr.loop_start.unwrap_or(0);
                 let loop_end = instr.loop_end.unwrap_or(0);
+                let sample_start = instr.sample_start;
+                let sample_end = instr.sample_end;
                 let interp_mode = instr.interp_mode.clone();
                 let load_result = if let Some(bytes) = embedded_bytes {
                     load_wav_from_bytes(&bytes)
@@ -363,6 +365,8 @@ impl App {
                 };
                 match load_result {
                     Ok((buf, channels)) => {
+                        let (buf, loop_start, loop_end) =
+                            apply_sample_bounds(buf, channels, sample_start, sample_end, loop_start, loop_end);
                         self.send_cmd(Command::LoadVoice {
                             slot: 0,
                             samples: buf,
@@ -393,6 +397,8 @@ impl App {
             let embedded_bytes = sample.bytes.clone();
             let loop_start = instr.loop_start.unwrap_or(0);
             let loop_end = instr.loop_end.unwrap_or(0);
+            let sample_start = instr.sample_start;
+            let sample_end = instr.sample_end;
             let interp_mode = instr.interp_mode.clone();
             let load_result = if let Some(bytes) = embedded_bytes {
                 load_wav_from_bytes(&bytes)
@@ -401,6 +407,8 @@ impl App {
             };
             match load_result {
                 Ok((buf, channels)) => {
+                    let (buf, loop_start, loop_end) =
+                        apply_sample_bounds(buf, channels, sample_start, sample_end, loop_start, loop_end);
                     self.send_cmd(Command::LoadVoice {
                         slot: 0,
                         samples: buf,
@@ -890,6 +898,31 @@ impl App {
             self.keyboard_instrument += 1;
         }
     }
+}
+
+/// Slice a decoded sample buffer to the region [sample_start, sample_end] and adjust
+/// loop points to be relative to the new start.  Returns the trimmed buffer and
+/// adjusted loop points.  `None` values default to the full buffer / no loop.
+fn apply_sample_bounds(
+    buf: Arc<Vec<f32>>,
+    channels: usize,
+    sample_start: Option<u32>,
+    sample_end: Option<u32>,
+    loop_start: u32,
+    loop_end: u32,
+) -> (Arc<Vec<f32>>, u32, u32) {
+    let total_frames = buf.len() / channels.max(1);
+    let start_frame = sample_start.unwrap_or(0) as usize;
+    let end_frame = sample_end.map(|e| e as usize).unwrap_or(total_frames);
+    let start_frame = start_frame.min(total_frames);
+    let end_frame = end_frame.clamp(start_frame, total_frames);
+    if start_frame == 0 && end_frame == total_frames {
+        return (buf, loop_start, loop_end);
+    }
+    let sliced = Arc::new(buf[start_frame * channels..end_frame * channels].to_vec());
+    let adj_loop_start = (loop_start as usize).saturating_sub(start_frame) as u32;
+    let adj_loop_end = (loop_end as usize).saturating_sub(start_frame) as u32;
+    (sliced, adj_loop_start, adj_loop_end)
 }
 
 /// List subdirectories and `.wav` files in `dir`, sorted alphabetically (case-insensitive).
