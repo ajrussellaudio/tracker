@@ -88,6 +88,8 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  Iteration $i / $MAX_ITERATIONS"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  # Update terminal tab/window title so the iteration is always visible
+  printf "\033]0;🤖 Ralph — iteration %s / %s\007" "$i" "$MAX_ITERATIONS"
 
   # Run Copilot inside the worktree so it sees that directory as the repo root.
   # Output is streamed live to the terminal and also captured for signal detection.
