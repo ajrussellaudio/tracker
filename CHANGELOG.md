@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Scrolling viewport in the sample browser: long directory listings now scroll so the cursor is always visible; viewport height is derived from the terminal size at draw time (#72)
+
 ### Changed
 
 - Rename Cargo workspace and crate names from `tracker`/`tracker-core` to `vitakt`/`vitakt-core`; rename source directories accordingly (#62)
