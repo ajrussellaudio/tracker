@@ -218,11 +218,17 @@ impl App {
             .to_string();
         let _ = std::fs::remove_file(&tmp_path);
 
-        if selected.to_lowercase().ends_with(".wav") && std::path::Path::new(&selected).exists() {
+        self.browser_apply_chooser_result(&selected);
+    }
+
+    /// Apply a chooser result: load `selected` as the active instrument's sample if it is
+    /// an existing `.wav` file, otherwise do nothing. Extracted for testability.
+    pub(crate) fn browser_apply_chooser_result(&mut self, selected: &str) {
+        if selected.to_lowercase().ends_with(".wav") && std::path::Path::new(selected).exists() {
             self.record("select sample");
             self.ensure_instrument(self.active_instrument);
             if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
-                instr.sample = Some(vitakt_core::model::Sample::from_path(selected.clone()));
+                instr.sample = Some(vitakt_core::model::Sample::from_path(selected.to_string()));
             }
             self.pop_view();
             self.reload_instrument_sample();

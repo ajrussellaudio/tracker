@@ -1405,13 +1405,10 @@ mod tests {
         let mut app = make_app();
         app.open_instrument_editor();
         app.open_sample_browser();
-        // Set file_browser to a command that writes the wav path to the chooser file.
-        app.config.file_browser = Some(format!(
-            "printf '%s' '{}' > \"$VITAKT_CHOOSER_FILE\"",
-            wav_str
-        ));
 
-        app.browser_launch_external();
+        // Call the loading branch directly with the wav path so the test does not
+        // depend on subprocess execution (which may fail in CI environments).
+        app.browser_apply_chooser_result(&wav_str);
 
         let instr = &app.song.instruments[app.active_instrument];
         assert!(instr.sample.is_some(), "sample should be set after selecting a .wav");
@@ -1442,12 +1439,9 @@ mod tests {
         app.open_sample_browser();
         app.ensure_instrument(app.active_instrument);
         let initial_sample = app.song.instruments[app.active_instrument].sample.clone();
-        app.config.file_browser = Some(format!(
-            "printf '%s' '{}' > \"$VITAKT_CHOOSER_FILE\"",
-            txt_str
-        ));
 
-        app.browser_launch_external();
+        // Call the loading branch directly with a non-.wav path.
+        app.browser_apply_chooser_result(&txt_str);
 
         let instr = &app.song.instruments[app.active_instrument];
         assert_eq!(
