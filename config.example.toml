@@ -1,0 +1,39 @@
+# vitakt global configuration
+# Place this file at ~/.config/vitakt/config.toml to configure global settings.
+#
+# If this file is absent, all settings use their defaults.
+# If a key is omitted, the setting uses its default value.
+# Unrecognised keys are silently ignored (forward-compatible).
+
+# ── Sample browser bookmarks ──────────────────────────────────────────────────
+# A list of directories shown in the bookmark overlay (press `b` in the sample
+# browser).  Only paths that exist on disk are shown.
+# Press `B` in the sample browser to add the current directory as a new bookmark
+# (the change is persisted here immediately).
+
+bookmarks = [
+    # "/home/user/samples",
+    # "/mnt/audio/drums",
+]
+
+# ── External file browser ─────────────────────────────────────────────────────
+# Command to launch an external terminal file-picker (e.g. yazi, ranger, mc).
+# When set, press `e` in the sample browser to suspend vitakt, launch the tool,
+# and automatically load the selected .wav into the current instrument on exit.
+#
+# The chosen file path is communicated via a temp file whose path is passed in
+# the VITAKT_CHOOSER_FILE environment variable.  Configure your picker to write
+# the selected path to that file.
+#
+# Example configurations:
+#
+#   yazi:
+#     file_browser = "yazi --chooser-file \"$VITAKT_CHOOSER_FILE\""
+#
+#   ranger:
+#     file_browser = "ranger --choosefile \"$VITAKT_CHOOSER_FILE\""
+#
+#   mc (Midnight Commander):
+#     file_browser = "mc"  # mc writes selections differently; see docs for setup
+
+# file_browser = "yazi --chooser-file \"$VITAKT_CHOOSER_FILE\""

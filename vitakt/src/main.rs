@@ -7,6 +7,8 @@ use crossterm::{
 };
 mod cli;
 use cli::{parse_args, CliAction};
+mod config;
+use config::Config;
 mod history;
 use history::History;
 mod note_utils;
@@ -37,6 +39,14 @@ use vitakt_core::{
     model::{Chain, ChainSlot, FxCommand, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
     storage,
 };
+
+// ── Shared test utilities ─────────────────────────────────────────────────────
+
+/// Shared mutex for tests that mutate the `HOME` environment variable.
+/// All test modules that set/restore HOME must use this single mutex so they
+/// don't race with each other (e.g. theme tests vs. config tests).
+#[cfg(test)]
+pub(crate) static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -198,6 +208,8 @@ struct App {
     status_timer: Option<std::time::Instant>,
     /// Loaded color theme.
     theme: Theme,
+    /// Global config loaded from `~/.config/vitakt/config.toml`.
+    config: Config,
 }
 
 impl App {
@@ -254,6 +266,7 @@ impl App {
             preview_playing,
             status_timer: None,
             theme: theme::load(),
+            config: Config::load(),
         }
     }
 
