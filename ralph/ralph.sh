@@ -113,16 +113,24 @@ determine_mode() {
       --json comments --jq '[.comments[].body] | join("\n---\n")' \
       < /dev/null 2>/dev/null || echo "")
 
-    APPROVED=$(echo "$COMMENT_BODIES" | grep -c "RALPH-REVIEW: APPROVED" 2>/dev/null || true)
+    APPROVED_COUNT=$(echo "$COMMENT_BODIES" | grep -c "RALPH-REVIEW: APPROVED" 2>/dev/null || true)
     CHANGES_REQUESTED=$(echo "$COMMENT_BODIES" | grep -c "RALPH-REVIEW: REQUEST_CHANGES" 2>/dev/null || true)
 
-    if [[ "${APPROVED:-0}" -gt 0 ]]; then
+    # Route based on the *last* RALPH-REVIEW comment, not just whether any approval exists.
+    # This prevents an infinite loop where merge mode posts REQUEST_CHANGES (CI failure)
+    # and routing blindly routes back to merge because an older APPROVED comment exists.
+    LAST_REVIEW_TYPE=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+      --json comments \
+      --jq '[.comments[] | select(.body | test("RALPH-REVIEW:"))] | last | .body |
+        if test("RALPH-REVIEW: APPROVED") then "APPROVED"
+        elif test("RALPH-REVIEW: REQUEST_CHANGES") then "REQUEST_CHANGES"
+        else "" end' \
+      < /dev/null 2>/dev/null || echo "")
+
+    if [[ "$LAST_REVIEW_TYPE" == "APPROVED" ]]; then
       MODE="merge"
-    elif [[ "${CHANGES_REQUESTED:-0}" -ge 2 ]]; then
-      MODE="force-approve"
-    elif [[ "${CHANGES_REQUESTED:-0}" -eq 1 ]]; then
-      # If commits were pushed after the REQUEST_CHANGES comment → round 2 review
-      # Otherwise → fix mode (no new commits yet)
+    elif [[ "$LAST_REVIEW_TYPE" == "REQUEST_CHANGES" ]]; then
+      # Check whether commits were pushed after the last REQUEST_CHANGES comment
       LAST_RC_TIME=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
         --json comments \
         --jq '[.comments[] | select(.body | contains("RALPH-REVIEW: REQUEST_CHANGES"))] | last | .createdAt // ""' \
@@ -133,7 +141,15 @@ determine_mode() {
         < /dev/null 2>/dev/null || echo "")
 
       if [[ -n "$LATEST_COMMIT_TIME" && -n "$LAST_RC_TIME" && "$LATEST_COMMIT_TIME" > "$LAST_RC_TIME" ]]; then
-        MODE="review-round2"
+        # New commits were pushed after the last RC.
+        if [[ "${APPROVED_COUNT:-0}" -gt 0 ]]; then
+          # PR already cleared a review pass — go straight to merge (CI will be re-checked there)
+          MODE="merge"
+        elif [[ "${CHANGES_REQUESTED:-0}" -ge 2 ]]; then
+          MODE="force-approve"
+        else
+          MODE="review-round2"
+        fi
       else
         MODE="fix"
       fi
