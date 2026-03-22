@@ -165,7 +165,11 @@ PR `#<N>` has a `<!-- RALPH-REVIEW: APPROVED -->` comment. Before merging, verif
    ```bash
    gh pr checks <N> < /dev/null
    ```
-   Look at the output. If any check is failed or still in progress, **do not merge**. Instead, post a comment explaining that CI is failing and stop. The loop will restart and re-enter Review or Fix Mode as appropriate.
+   Look at the output. If any check is **failed**, post a `REQUEST_CHANGES` comment (using the standard `<!-- RALPH-REVIEW: REQUEST_CHANGES -->` format) listing the failing check names, then **stop**. The next iteration will enter Fix Mode where Ralph can address the failures.
+
+   If any check is still **in progress**, **stop without posting a comment**. The next iteration will return to Merge Mode and re-check.
+
+   Only proceed to step 2 if all checks have passed.
 
 2. Merge using a merge commit (never squash — this preserves SHAs for the downstream chain):
    ```bash
