@@ -1,4 +1,4 @@
-use tracker_core::Song;
+use vitakt_core::Song;
 
 const MAX_HISTORY: usize = 1000;
 

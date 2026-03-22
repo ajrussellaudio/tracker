@@ -1,15 +1,15 @@
 [package]
-name = "tracker"
+name = "vitakt"
 version = "0.1.1"
 edition = "2021"
-repository = "https://github.com/ajrussellaudio/tracker"
+repository = "https://github.com/ajrussellaudio/vitakt"
 
 [[bin]]
-name = "tracker"
+name = "vitakt"
 path = "src/main.rs"
 
 [dependencies]
-tracker-core = { path = "../tracker-core" }
+vitakt-core = { path = "../vitakt-core" }
 anyhow = "1.0"
 ratatui = "0.29"
 crossterm = "0.28"

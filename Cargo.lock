@@ -1111,32 +1111,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
-name = "tracker"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "cpal",
- "crossterm",
- "hound",
- "ratatui",
- "rtrb",
- "serde",
- "toml",
- "tracker-core",
-]
-
-[[package]]
-name = "tracker-core"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "bincode",
- "hound",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1170,6 +1144,32 @@ name = "unicode-width"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fc81956842c57dac11422a97c3b8195a1ff727f06e85c84ed2e8aa277c9a0fd"
+
+[[package]]
+name = "vitakt"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "crossterm",
+ "hound",
+ "ratatui",
+ "rtrb",
+ "serde",
+ "toml",
+ "vitakt-core",
+]
+
+[[package]]
+name = "vitakt-core"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "hound",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "walkdir"

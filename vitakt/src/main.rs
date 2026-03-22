@@ -26,7 +26,7 @@ use std::{
     },
     time::Duration,
 };
-use tracker_core::{
+use vitakt_core::{
     audio::{Command, Mixer, Sequencer, Voice},
     model::{Chain, ChainSlot, FxCommand, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
     storage,
@@ -312,12 +312,12 @@ impl App {
         }
     }
 
-    fn phrase_mut(&mut self) -> &mut tracker_core::model::Phrase {
+    fn phrase_mut(&mut self) -> &mut vitakt_core::model::Phrase {
         let idx = self.active_phrase_idx.min(self.song.phrases.len().saturating_sub(1));
         &mut self.song.phrases[idx]
     }
 
-    fn phrase(&self) -> &tracker_core::model::Phrase {
+    fn phrase(&self) -> &vitakt_core::model::Phrase {
         let idx = self.active_phrase_idx.min(self.song.phrases.len().saturating_sub(1));
         &self.song.phrases[idx]
     }
@@ -386,7 +386,7 @@ impl App {
     /// Ensure instrument slots 0..=idx exist (creates defaults up to MAX_INSTRUMENTS).
     fn ensure_instrument(&mut self, idx: usize) {
         while self.song.instruments.len() <= idx && self.song.instruments.len() < MAX_INSTRUMENTS {
-            self.song.instruments.push(tracker_core::model::Instrument::default());
+            self.song.instruments.push(vitakt_core::model::Instrument::default());
         }
     }
 
@@ -530,7 +530,7 @@ impl App {
                         self.record("select sample");
                         self.ensure_instrument(self.active_instrument);
                         if let Some(instr) = self.song.instruments.get_mut(self.active_instrument) {
-                            instr.sample = Some(tracker_core::model::Sample::from_path(path_str));
+                            instr.sample = Some(vitakt_core::model::Sample::from_path(path_str));
                         }
                         self.pop_view();
                         self.reload_instrument_sample();
@@ -544,11 +544,11 @@ impl App {
                             .to_string();
                         match storage::load_trk(&path_str) {
                             Ok(song) => {
-                                self.song = tracker_core::model::migrate(song);
+                                self.song = vitakt_core::model::migrate(song);
                                 if self.song.phrases.is_empty() {
                                     self.song
                                         .phrases
-                                        .push(tracker_core::model::Phrase::default());
+                                        .push(vitakt_core::model::Phrase::default());
                                 }
                                 self.sync_phrase_to_sequencer();
                                 self.reload_instruments();
@@ -701,9 +701,9 @@ impl App {
             let path = path.trim();
             match storage::load_trk(path) {
                 Ok(song) => {
-                    self.song = tracker_core::model::migrate(song);
+                    self.song = vitakt_core::model::migrate(song);
                     if self.song.phrases.is_empty() {
-                        self.song.phrases.push(tracker_core::model::Phrase::default());
+                        self.song.phrases.push(vitakt_core::model::Phrase::default());
                     }
                     self.sync_phrase_to_sequencer();
                     self.reload_instruments();
@@ -788,7 +788,7 @@ impl App {
         std::thread::spawn(move || {
             let buffers = load_all_instrument_samples(&song);
             let result: anyhow::Result<String> = (|| {
-                let audio = tracker_core::render::render_to_buffer(
+                let audio = vitakt_core::render::render_to_buffer(
                     &song,
                     &buffers,
                     None,
@@ -821,7 +821,7 @@ impl App {
                 std::fs::create_dir_all(&dir)?;
                 let buffers = load_all_instrument_samples(&song);
                 for track in 0..TRACKS {
-                    let audio = tracker_core::render::render_to_buffer(
+                    let audio = vitakt_core::render::render_to_buffer(
                         &song,
                         &buffers,
                         Some(track),
@@ -1254,7 +1254,7 @@ fn start_audio_stream(
 // ── TUI rendering helpers ─────────────────────────────────────────────────────
 
 fn render_phrase_grid(
-    phrase: &tracker_core::model::Phrase,
+    phrase: &vitakt_core::model::Phrase,
     cursor_step: usize,
     cursor_col: usize,
     phrase_idx: usize,
@@ -1883,9 +1883,9 @@ fn run_tui(
             let path_str = path.to_string_lossy().to_string();
             match storage::load_trk(&path_str) {
                 Ok(song) => {
-                    app.song = tracker_core::model::migrate(song);
+                    app.song = vitakt_core::model::migrate(song);
                     if app.song.phrases.is_empty() {
-                        app.song.phrases.push(tracker_core::model::Phrase::default());
+                        app.song.phrases.push(vitakt_core::model::Phrase::default());
                     }
                     app.sync_phrase_to_sequencer();
                     app.reload_instruments();
@@ -2476,7 +2476,7 @@ fn run_tui(
                                         if let Some(slot) = app.song.chains[ci].slots.get(app.chain_cursor) {
                                             let phrase_idx = slot.phrase as usize;
                                             while app.song.phrases.len() <= phrase_idx {
-                                                app.song.phrases.push(tracker_core::model::Phrase::default());
+                                                app.song.phrases.push(vitakt_core::model::Phrase::default());
                                             }
                                             app.active_phrase_idx = phrase_idx;
                                             app.push_view(View::PhraseEditor);
@@ -2563,7 +2563,7 @@ fn run_tui(
                                         app.record(&format!("clear FX slot {} at step {}", slot_idx + 1, app.cursor_step));
                                         // Clear just the active FX slot.
                                         app.phrase_mut().steps[idx].fx[slot_idx] =
-                                            tracker_core::model::FxSlot::default();
+                                            vitakt_core::model::FxSlot::default();
                                     } else {
                                         app.record(&format!("clear step {}", app.cursor_step));
                                         // Clear the entire step.
@@ -2660,7 +2660,7 @@ fn run_tui(
                                     let step_idx = app.cursor_step;
                                     app.record(&format!("clear FX slot {} at step {}", slot_idx + 1, app.cursor_step));
                                     app.phrase_mut().steps[step_idx].fx[slot_idx] =
-                                        tracker_core::model::FxSlot::default();
+                                        vitakt_core::model::FxSlot::default();
                                     app.sync_phrase_to_sequencer();
                                 }
                             }
@@ -2785,7 +2785,7 @@ fn run_tui(
                                             INSTR_FIELD_NAME => instr.name = buf,
                                             INSTR_FIELD_SAMPLE => {
                                                 instr.sample = Some(
-                                                    tracker_core::model::Sample::from_path(&buf),
+                                                    vitakt_core::model::Sample::from_path(&buf),
                                                 );
                                             }
                                             _ => {}
@@ -3130,7 +3130,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracker_core::model::Song;
+    use vitakt_core::model::Song;
 
     fn make_app() -> App {
         App::new(
@@ -3145,7 +3145,7 @@ mod tests {
     #[test]
     fn app_default_song_has_current_version() {
         let app = make_app();
-        assert_eq!(app.song.version, tracker_core::CURRENT_VERSION);
+        assert_eq!(app.song.version, vitakt_core::CURRENT_VERSION);
     }
 
     #[test]
@@ -3332,7 +3332,7 @@ mod tests {
 
         let original_steps = app.song.phrases[0].steps.clone();
         app.song = Song::default();
-        app.song.phrases.push(tracker_core::model::Phrase::default());
+        app.song.phrases.push(vitakt_core::model::Phrase::default());
 
         app.mode = InputMode::Command;
         app.cmd_buf = format!("e {path_str}");
@@ -3458,7 +3458,7 @@ mod tests {
 
         // Reset song and reload
         app.song = Song::default();
-        app.song.phrases.push(tracker_core::model::Phrase::default());
+        app.song.phrases.push(vitakt_core::model::Phrase::default());
 
         app.mode = InputMode::Command;
         app.cmd_buf = format!("e {path_str}");
@@ -3998,7 +3998,7 @@ mod tests {
     #[test]
     fn phrase_grid_highlights_playback_row_when_playing() {
         use ratatui::backend::TestBackend;
-        let phrase = tracker_core::model::Phrase::default();
+        let phrase = vitakt_core::model::Phrase::default();
         let theme = Theme::default();
         let table = render_phrase_grid(&phrase, 0, 0, 0, &theme, true, 5);
         let backend = TestBackend::new(80, 24);
@@ -4017,7 +4017,7 @@ mod tests {
     #[test]
     fn phrase_grid_cursor_takes_priority_over_playback_head() {
         use ratatui::backend::TestBackend;
-        let phrase = tracker_core::model::Phrase::default();
+        let phrase = vitakt_core::model::Phrase::default();
         let theme = Theme::default();
         // cursor and playback head both on row 3
         let table = render_phrase_grid(&phrase, 3, 0, 0, &theme, true, 3);
