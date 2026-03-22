@@ -135,8 +135,8 @@ pub fn run_tui(
                     frame.render_widget(table, outer[0]);
                 }
                 View::WaveformEditor => {
-                    let w = outer[0].width as usize;
-                    let h = outer[0].height as usize;
+                    let w = outer[0].width.saturating_sub(2) as usize;
+                    let h = outer[0].height.saturating_sub(2) as usize;
                     let lines = render_waveform_editor(&app, w, h);
                     let para = ratatui::widgets::Paragraph::new(lines).block(
                         ratatui::widgets::Block::default()

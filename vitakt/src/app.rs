@@ -178,6 +178,8 @@ pub struct App {
     pub browser_show_bookmarks: bool,
     /// Waveform editor: downsampled f32 buffer for the active instrument's sample.
     pub waveform_samples: Vec<f32>,
+    /// Waveform editor: original frame count of the loaded sample (before downsampling).
+    pub waveform_original_frames: usize,
     /// Waveform editor: which handle is currently active.
     pub waveform_active_handle: crate::braille::ActiveHandle,
     /// Sample browser: cursor index within the bookmark overlay list.

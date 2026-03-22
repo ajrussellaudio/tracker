@@ -594,13 +594,15 @@ pub fn render_waveform_editor(app: &App, width: usize, height: usize) -> Vec<rat
         None => return Vec::new(),
     };
 
-    let sample_len = app.waveform_samples.len().max(1);
+    let raw_frames = app.waveform_original_frames.max(1);
+    let ds_len = app.waveform_samples.len().max(1);
+    let to_ds = |f: u32| (f as usize * ds_len / raw_frames).min(ds_len.saturating_sub(1));
 
     let handles = WaveformHandles {
-        sample_start: instr.sample_start.unwrap_or(0) as usize,
-        sample_end: instr.sample_end.unwrap_or(sample_len as u32) as usize,
-        loop_start: instr.loop_start.unwrap_or(0) as usize,
-        loop_end: instr.loop_end.unwrap_or(sample_len as u32) as usize,
+        sample_start: to_ds(instr.sample_start.unwrap_or(0)),
+        sample_end:   to_ds(instr.sample_end.unwrap_or(raw_frames as u32)),
+        loop_start:   to_ds(instr.loop_start.unwrap_or(0)),
+        loop_end:     to_ds(instr.loop_end.unwrap_or(raw_frames as u32)),
         active: app.waveform_active_handle,
     };
 

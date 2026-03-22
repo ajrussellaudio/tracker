@@ -74,6 +74,7 @@ impl App {
             browser_bookmark_cursor: 0,
             needs_terminal_clear: false,
             waveform_samples: Vec::new(),
+            waveform_original_frames: 0,
             waveform_active_handle: crate::braille::ActiveHandle::SampleStart,
         }
     }
@@ -195,6 +196,7 @@ impl App {
             Ok((buf, _channels)) => {
                 // Downsample to at most 4096 points so the renderer stays fast.
                 const MAX_WAVEFORM_SAMPLES: usize = 4096;
+                let original_frames = buf.len();
                 let samples: Vec<f32> = if buf.len() <= MAX_WAVEFORM_SAMPLES {
                     buf.as_ref().to_vec()
                 } else {
@@ -204,6 +206,7 @@ impl App {
                         .collect()
                 };
                 self.waveform_samples = samples;
+                self.waveform_original_frames = original_frames;
                 self.waveform_active_handle = crate::braille::ActiveHandle::SampleStart;
                 self.push_view(View::WaveformEditor);
             }
