@@ -1,14 +1,20 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+mod cli;
+use cli::{parse_args, CliAction};
 mod history;
 use history::History;
+mod note_utils;
+use note_utils::*;
 mod theme;
 use theme::Theme;
+mod wav_io;
+use wav_io::*;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -31,58 +37,6 @@ use vitakt_core::{
     model::{Chain, ChainSlot, FxCommand, InterpMode, Song, Step, STEPS_PER_PHRASE, TRACKS},
     storage,
 };
-
-// ── Note helpers ─────────────────────────────────────────────────────────────
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-
-fn note_name(midi: u8) -> String {
-    let octave = (midi as i32 / 12) - 1;
-    let name = NOTE_NAMES[(midi % 12) as usize];
-    if name.len() == 1 {
-        format!("{name}-{octave}")
-    } else {
-        format!("{name}{octave}")
-    }
-}
-
-/// Map a QWERTY key to a semitone offset from C (standard 2-octave tracker layout).
-/// Lower row: z=C(0) s=C#(1) x=D(2) d=D#(3) c=E(4) v=F(5) g=F#(6) b=G(7) h=G#(8) n=A(9) j=A#(10) m=B(11)
-/// Upper row: q=C(12) 2=C#(13) w=D(14) 3=D#(15) e=E(16) r=F(17) 5=F#(18) t=G(19) 6=G#(20) y=A(21) 7=A#(22) u=B(23)
-fn qwerty_to_semitone(c: char) -> Option<i8> {
-    match c {
-        'z' => Some(0),
-        's' => Some(1),
-        'x' => Some(2),
-        'd' => Some(3),
-        'c' => Some(4),
-        'v' => Some(5),
-        'g' => Some(6),
-        'b' => Some(7),
-        'h' => Some(8),
-        'n' => Some(9),
-        'j' => Some(10),
-        'm' => Some(11),
-        'q' => Some(12),
-        '2' => Some(13),
-        'w' => Some(14),
-        '3' => Some(15),
-        'e' => Some(16),
-        'r' => Some(17),
-        '5' => Some(18),
-        't' => Some(19),
-        '6' => Some(20),
-        'y' => Some(21),
-        '7' => Some(22),
-        'u' => Some(23),
-        _ => None,
-    }
-}
-
-/// Compute playback speed ratio from note vs root using equal temperament.
-fn pitch_speed(note: u8, root_note: u8) -> f32 {
-    let delta = note as i32 - root_note as i32;
-    2.0_f64.powf(delta as f64 / 12.0) as f32
-}
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -156,22 +110,6 @@ const INSTR_FIELD_COUNT: usize = 8;
 /// Maximum number of instruments allowed in one project.
 const MAX_INSTRUMENTS: usize = 256;
 
-// ── Phrase-editor column indices ─────────────────────────────────────────────
-const COL_NOTE: usize = 0;
-const COL_INS: usize = 1;
-/// Columns 2–9: FX slot pairs (cmd at even offsets, val at odd offsets).
-/// `col_to_fx(col)` returns `Some((slot_index, is_cmd_field))` for FX columns.
-const COL_FX_FIRST: usize = 2;
-const COL_COUNT: usize = 10; // note + ins + 4×(cmd+val)
-
-fn col_to_fx(col: usize) -> Option<(usize, bool)> {
-    if col >= COL_FX_FIRST && col < COL_COUNT {
-        let offset = col - COL_FX_FIRST;
-        Some((offset / 2, offset % 2 == 0)) // (slot_index, is_cmd)
-    } else {
-        None
-    }
-}
 
 struct App {
     song: Song,
@@ -952,87 +890,6 @@ impl App {
             self.keyboard_instrument += 1;
         }
     }
-}
-
-// ── WAV export helpers ────────────────────────────────────────────────────────
-
-/// Write a stereo 48 kHz 32-bit float PCM WAV file.
-fn write_wav(path: &str, samples: &[f32]) -> Result<()> {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: 48000,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let file =
-        std::fs::File::create(path).with_context(|| format!("cannot create WAV: {path}"))?;
-    let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), spec)
-        .with_context(|| format!("cannot open WavWriter for: {path}"))?;
-    for &s in samples {
-        writer.write_sample(s)?;
-    }
-    writer.finalize()?;
-    Ok(())
-}
-
-/// Decode WAV files for all instruments in `song` into f32 buffers.
-/// Instruments without a sample path (or whose file cannot be loaded) get `None`.
-fn load_all_instrument_samples(
-    song: &Song,
-) -> Vec<Option<(Arc<Vec<f32>>, usize)>> {
-    song.instruments
-        .iter()
-        .map(|instr| {
-            instr.sample.as_ref().and_then(|s| {
-                if let Some(bytes) = &s.bytes {
-                    load_wav_from_bytes(bytes).ok()
-                } else {
-                    load_wav(&s.path).ok()
-                }
-            })
-        })
-        .collect()
-}
-
-fn load_wav(path: &str) -> Result<(Arc<Vec<f32>>, usize)> {
-    let mut reader =
-        hound::WavReader::open(path).with_context(|| format!("failed to open WAV: {path}"))?;
-    decode_wav_reader(&mut reader)
-}
-
-fn load_wav_from_bytes(bytes: &[u8]) -> Result<(Arc<Vec<f32>>, usize)> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut reader =
-        hound::WavReader::new(cursor).context("failed to parse embedded WAV bytes")?;
-    decode_wav_reader(&mut reader)
-}
-
-fn decode_wav_reader<R: std::io::Read + std::io::Seek>(
-    reader: &mut hound::WavReader<R>,
-) -> Result<(Arc<Vec<f32>>, usize)> {
-    let spec = reader.spec();
-    let channels = spec.channels as usize;
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .map(|s| s.map_err(anyhow::Error::from))
-            .collect::<Result<_>>()?,
-        hound::SampleFormat::Int => {
-            let max = (1_i64 << (spec.bits_per_sample - 1)) as f32;
-            match spec.bits_per_sample {
-                16 => reader
-                    .samples::<i16>()
-                    .map(|s| s.map(|v| v as f32 / max).map_err(anyhow::Error::from))
-                    .collect::<Result<_>>()?,
-                24 | 32 => reader
-                    .samples::<i32>()
-                    .map(|s| s.map(|v| v as f32 / max).map_err(anyhow::Error::from))
-                    .collect::<Result<_>>()?,
-                _ => anyhow::bail!("unsupported bit depth: {}", spec.bits_per_sample),
-            }
-        }
-    };
-    Ok((Arc::new(samples), channels))
 }
 
 /// List subdirectories and `.wav` files in `dir`, sorted alphabetically (case-insensitive).
@@ -3101,45 +2958,6 @@ fn run_tui(
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
-/// The action to take on startup, derived from CLI arguments.
-#[derive(Debug, PartialEq)]
-enum CliAction {
-    /// Show the interactive startup screen (no arguments given).
-    ShowStartup,
-    /// Open the given `.trk` file directly, skipping the startup screen.
-    OpenFile(std::path::PathBuf),
-}
-
-/// Parse command-line arguments into a [`CliAction`].
-///
-/// Returns `Err` for unknown flags (including the removed `--sample`).
-fn parse_args(args: &[String]) -> Result<CliAction> {
-    // Skip argv[0] (program name).
-    let args = match args.first() {
-        // If the first element looks like a program path, skip it.
-        Some(first) if first.contains('/') || first.contains('\\') || !first.ends_with(".trk") => {
-            &args[1..]
-        }
-        _ => args,
-    };
-    if args.is_empty() {
-        return Ok(CliAction::ShowStartup);
-    }
-    for arg in args {
-        if arg.starts_with('-') {
-            if arg == "--sample" {
-                anyhow::bail!(
-                    "`--sample` has been removed.\n\
-                     Launch with `vitakt path/to/project.trk` to open a project directly,\n\
-                     or `vitakt` with no arguments to show the startup screen."
-                );
-            }
-            anyhow::bail!("Unknown flag: {arg}\nUsage: vitakt [path.trk]");
-        }
-    }
-    Ok(CliAction::OpenFile(std::path::PathBuf::from(&args[0])))
-}
 
 fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
