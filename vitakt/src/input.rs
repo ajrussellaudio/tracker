@@ -82,6 +82,7 @@ pub fn handle_input(app: &mut App, key: KeyEvent, terminal_height: u16) -> bool 
         View::InstrumentEditor => handle_instrument_editor(app, key),
         View::SampleBrowser => handle_sample_browser(app, key, terminal_height),
         View::Mixer => handle_mixer(app, key),
+        View::WaveformEditor => handle_waveform_editor(app, key),
     }
 }
 
@@ -750,6 +751,9 @@ fn handle_instrument_editor(app: &mut App, key: KeyEvent) -> bool {
                     instr_editor_increment(app, 1);
                 }
             }
+            KeyCode::Char('w') => {
+                app.open_waveform_editor();
+            }
             KeyCode::Enter => {
                 if app.instr_cursor == INSTR_FIELD_SAMPLE {
                     app.open_sample_browser();
@@ -965,6 +969,16 @@ fn handle_mixer(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char(' ') => app.toggle_play(),
         KeyCode::F(5) => app.restart_play(),
 
+        _ => {}
+    }
+    false
+}
+
+fn handle_waveform_editor(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc => {
+            app.pop_view();
+        }
         _ => {}
     }
     false

@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - External file browser integration: pressing `e` in the sample browser suspends the vitakt TUI, launches the command configured in `file_browser` (e.g. `yazi`, `ranger`, `mc`) with `VITAKT_CHOOSER_FILE` set to a temp file path, and loads the selected `.wav` into the active instrument on exit; non-`.wav` selections are silently ignored; `e` does nothing when `file_browser` is unset; README documents setup for yazi, ranger, and mc (#80)
 - Scrolling viewport in the sample browser: long directory listings now scroll so the cursor is always visible; viewport height is derived from the terminal size at draw time (#72)
 - `..` parent directory entry appears at the top of every non-root directory in the sample browser; pressing Enter on it navigates up just like Backspace (#73)
+- Waveform editor screen (`View::WaveformEditor`): `w` in the instrument editor opens a full-width Braille waveform display for the active instrument's sample; if no sample is assigned a timed status bar error is shown and the screen does not open; all four handle bars (`sample_start`, `sample_end`, `loop_start`, `loop_end`) are rendered at their correct positions; `Esc` returns to the instrument editor and stops any active preview playback (#81)
 
 ### Changed
 
