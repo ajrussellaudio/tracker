@@ -766,8 +766,7 @@ impl App {
                 }
             }
         } else if raw.is_empty() {
-            self.status =
-                "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
+            // No-op: Normal mode status bar shows its own fixed hint text.
         } else {
             self.status = format!("Unknown command: {raw}");
         }
@@ -1911,7 +1910,6 @@ fn run_tui(
         if let Some(timer) = app.status_timer {
             if timer.elapsed() >= Duration::from_secs(2) {
                 app.status_timer = None;
-                app.status = "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit".to_string();
             }
         }
 
@@ -2016,7 +2014,7 @@ fn run_tui(
                 match app.view {
                 View::Startup => "j/k: navigate  Enter: select  q: quit".to_string(),
                 View::SongView => format!(
-                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  q: quit"
+                    "{mode_label}  |  {transport}  |  hjkl: nav  0-9/a-f: chain  Del: clear  Enter: chain view  o: add row below  O: add row above  F3: phrase  ←/→: BPM  q: quit"
                 ),
                 View::ChainView => {
                     if app.chain_insert_mode {
@@ -2026,7 +2024,7 @@ fn run_tui(
                     }
                 }
                 View::PhraseEditor => match app.mode {
-                    InputMode::Normal => format!("{mode_label}  |  {transport}  |  {}", app.status),
+                    InputMode::Normal => format!("{mode_label}  |  {transport}  |  SPC: play  i: insert  Tab: instrument  ←/→: BPM  :: command  q: quit"),
                     InputMode::Insert => {
                         let col_hint = match col_to_fx(app.cursor_col) {
                             Some((s, true)) => {
@@ -2583,10 +2581,10 @@ fn run_tui(
                                     if app.yy_pending {
                                         app.yanked_step =
                                             Some(app.phrase().steps[app.cursor_step].clone());
-                                        app.status = format!(
+                                        app.set_timed_status(format!(
                                             "Yanked step {}",
                                             app.cursor_step
-                                        );
+                                        ));
                                         app.yy_pending = false;
                                     } else {
                                         app.yy_pending = true;
@@ -2617,9 +2615,6 @@ fn run_tui(
                             KeyCode::Esc => {
                                 app.mode = InputMode::Normal;
                                 app.fx_edit_buf.clear();
-                                app.status =
-                                    "NORMAL  |  SPC: play  |  i: insert  |  Tab: instrument  |  :: command  |  q: quit"
-                                        .to_string();
                             }
                             KeyCode::Up => {
                                 app.cursor_step =
